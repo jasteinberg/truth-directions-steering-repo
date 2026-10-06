@@ -4,13 +4,10 @@ How the notebooks run from a fresh clone.
 
 ## Most notebooks are self-contained
 
-`policy_gradient`, `ppo`, `tabular_control`, `reward_modeling`,
-`scalable_oversight`, `rlhf_pipeline`, and `honesty_empirical` train small
-models on **synthetic data generated in-notebook** — no external artifacts or
-downloads. They ship already executed, and "Run All" reproduces them
-end-to-end in the conda env `interp` (laptop-cheap; no GPU required). The
-derivations behind them live in `docs/` (`policy_gradient.md`, `ppo.md`,
-`architectures.md`).
+`scalable_oversight` and `honesty_empirical` train small models on **synthetic
+data generated in-notebook** — no external artifacts or downloads. "Run All"
+reproduces them end-to-end in the conda env `interp` (laptop-cheap; no GPU
+required).
 
 ## The one external dependency: `truth_directions`
 

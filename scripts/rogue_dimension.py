@@ -10,17 +10,17 @@ coordinates and droppers at every layer; the same observables on the extra datas
 and on OLMo-2-1B; the outlier check; steering and decoding along v1 and theta_perp;
 the per-pair score gradient and its fixed-seed bootstrap intervals.
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    observables            geometry_observables.py
-    all-layers             geometry_all_layers.py
-    massive                massive_all_layers.py
-    extra-datasets         geometry_extra_datasets.py
-    olmo                   geometry_olmo.py
-    outliers               outlier_check.py
-    steer-arms             check_rogue_dimension.py
-    gradient               score_gradient.py
-    gradient-ci            regen_gradient_ci.py
+    observables            Order parameters for probe geometry that the interpretability ...
+    all-layers             The geometry observables of `rogue_dimension.py observables` at EVERY ...
+    massive                Does the massive activation survive to the final layers? ...
+    extra-datasets         Rogue-dimension observables on the main-tier datasets the post ...
+    olmo                   Does the rogue-dimension signature replicate outside the Pythia ...
+    outliers               Is the rogue dimension eleven outlier statements? Four checks
+    steer-arms             Is the large steering effect on `counterfact` a truth direction, ...
+    gradient               Measures g = <sum_t grad_{x_t} ell>, the mean gradient of the ...
+    gradient-ci            Regenerate the bootstrap intervals on the score-gradient ...
 
 Run from the repo root:  python scripts/rogue_dimension.py <subcommand> [-h]
 
@@ -28,7 +28,6 @@ Drafted with the assistance of Claude (Anthropic).
 """
 import argparse
 import gc
-import glob
 import json
 import os
 import sys
@@ -40,6 +39,7 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from utils import provenance
 from utils.truthlib import acts, data, steering
 from utils.truthlib import estimators as est
 from utils.truthlib.acts import extract_all_layers, get_model
@@ -65,7 +65,7 @@ CAP = 1199
 
 
 # =============================================================================
-# observables  (was scripts/geometry_observables.py)
+# observables
 # =============================================================================
 OBS_OUT = os.path.join(REPO, "artifacts", "geometry_observables.json")
 
@@ -95,17 +95,20 @@ def run_observables(argv=None):
     args = ap.parse_args(argv)
 
     results = {}
-    for p in sorted(glob.glob(os.path.join(CACHE, "*.npz"))):
-        key = os.path.basename(p)[:-4]
-        model, ds = key.split("__")
-        z = np.load(p); y = z["y"]
-        layers = sorted([int(k[1:]) for k in z.files if k.startswith("L")])
+    # the four cached (model, dataset) pairs in the published order; each cache must hold its
+    # model's planned layers (steering.load_cached_acts refuses a missing or truncated one)
+    cells = [(m, ds, nb) for m, nb in (("pythia-1.4b", 24), ("pythia-2.8b", 32))
+             for ds in ("cities", "counterfact_true_false")]
+    for model, ds, n_blocks in cells:
+        key = f"{model}__{ds}"
+        Xs, y = steering.load_cached_acts(model, ds, n_blocks)
+        layers = sorted(Xs)
         print(f"\n=== {model} / {ds} ===", flush=True)
         print(f"{'L':>4} {'PR':>8} {'cos_v1':>8} {'d_mm':>7} {'d_maha':>8} "
               f"{'hidden':>7} {'var_th':>11}", flush=True)
         per_layer, thetas = {}, {}
         for L in layers:
-            o = observables(z[f"L{L}"].astype(np.float64), y, args.shrink)
+            o = observables(Xs[L].astype(np.float64), y, args.shrink)
             thetas[L] = np.array(o.pop("theta"))
             per_layer[str(L)] = o
             print(f"{L:>4} {o['PR']:>8.2f} {o['cos_theta_v1']:>8.3f} "
@@ -132,7 +135,7 @@ def run_observables(argv=None):
 
 
 # =============================================================================
-# all-layers  (was scripts/geometry_all_layers.py)
+# all-layers
 # =============================================================================
 ALL_DEV = "mps"
 
@@ -141,7 +144,7 @@ ALL_OUT = os.path.join(REPO, "artifacts", "geometry_all_layers.json")
 
 
 def run_all_layers(argv=None):
-    """The geometry observables of geometry_observables.py at EVERY layer, not the
+    """The geometry observables of `rogue_dimension.py observables` at EVERY layer, not the
     six-layer probed grid. Motivated by the tl;dr claim that on `counterfact` the
     class gap never dominates the spread "at any layer": the cached grid stops at
     28, and the one layer where the plain probe clears its null is 32.
@@ -159,10 +162,11 @@ def run_all_layers(argv=None):
     ap = argparse.ArgumentParser(description=run_all_layers.__doc__)
     ap.add_argument("models", nargs="?", default="EleutherAI/pythia-2.8b", help="comma-separated")
     ap.add_argument("datasets", nargs="?", default="counterfact_true_false,cities", help="comma-separated")
+    ap.add_argument("--out", default=ALL_OUT, help="results file (default: the published one; merged into if it exists)")
     args = ap.parse_args(argv)
     models, dsets = args.models.split(","), args.datasets.split(",")
 
-    results = json.load(open(ALL_OUT)) if os.path.exists(ALL_OUT) else {}
+    results = json.load(open(args.out)) if os.path.exists(args.out) else {}
 
     for mname in models:
         tok, model = acts.get_model(mname, ALL_DEV, torch.float16)
@@ -190,13 +194,13 @@ def run_all_layers(argv=None):
             results[key] = {"model": mname, "dataset": ds, "n": int(len(y)),
                             "layers": rows}
             del A; gc.collect()
-            json.dump(results, open(ALL_OUT, "w"), indent=1)
-            print(f"  wrote {ALL_OUT}", flush=True)
+            json.dump(results, open(args.out, "w"), indent=1)
+            print(f"  wrote {args.out}", flush=True)
         del model; gc.collect()
 
 
 # =============================================================================
-# massive  (was scripts/massive_all_layers.py)
+# massive
 # =============================================================================
 MASSIVE_DEV = "mps"
 
@@ -205,7 +209,7 @@ MASSIVE_OUT = os.path.join(REPO, "artifacts", "massive_all_layers.json")
 
 
 def run_massive(argv=None):
-    """Does the massive activation survive to the final layers? geometry_all_layers.py
+    """Does the massive activation survive to the final layers? `rogue_dimension.py all-layers`
     found that `counterfact` escapes the rogue dimension at layers 31-32 on
     pythia-2.8b (cos 0.982 -> 0.653 -> 0.055). If the mechanism of *The origin of
     the rogue dimension* is right, the escape should coincide with the massive
@@ -218,9 +222,10 @@ def run_massive(argv=None):
     ap = argparse.ArgumentParser(description=run_massive.__doc__)
     ap.add_argument("models", nargs="?", default="EleutherAI/pythia-2.8b", help="comma-separated")
     ap.add_argument("datasets", nargs="?", default="counterfact_true_false,cities", help="comma-separated")
+    ap.add_argument("--out", default=MASSIVE_OUT, help="results file (default: the published one; merged into if it exists)")
     args = ap.parse_args(argv)
     models, dsets = args.models.split(","), args.datasets.split(",")
-    results = json.load(open(MASSIVE_OUT)) if os.path.exists(MASSIVE_OUT) else {}
+    results = json.load(open(args.out)) if os.path.exists(args.out) else {}
 
     for mname in models:
         tok, model = acts.get_model(mname, MASSIVE_DEV, torch.float16)
@@ -240,13 +245,13 @@ def run_massive(argv=None):
             results[key] = {"model": mname, "dataset": ds, "n": int(len(y)),
                             "layers": rows}
             del A; gc.collect()
-            json.dump(results, open(MASSIVE_OUT, "w"), indent=1)
-            print(f"  wrote {MASSIVE_OUT}", flush=True)
+            json.dump(results, open(args.out, "w"), indent=1)
+            print(f"  wrote {args.out}", flush=True)
         del model; gc.collect()
 
 
 # =============================================================================
-# extra-datasets  (was scripts/geometry_extra_datasets.py)
+# extra-datasets
 # =============================================================================
 EXTRA_MODEL = "EleutherAI/pythia-2.8b"
 
@@ -257,7 +262,7 @@ EXTRA_DATASETS = ["companies_true_false", "common_claim_true_false", "cities_cit
 LAYERS = [24, 28, 31]
 
 
-EXTRA_DEV = os.environ.get("COVER_DEV", "mps")
+EXTRA_DEV = "mps"                         # default for --device
 
 
 EXTRA_OUT = REPO / "artifacts" / "geometry_extra_datasets.json"
@@ -271,15 +276,17 @@ def run_extra_datasets(argv=None):
     instance of the rogue-dimension pattern" from its plain/whitened gap alone.
     This measures the spectrum directly, at the three depths the post reasons
     about, on the datasets whose selected layer sits deep and whose plain d' is
-    small. Same observables() as geometry_observables.py, so the numbers are
+    small. Same observables() as `rogue_dimension.py observables`, so the numbers are
     comparable to the cities / counterfact entries there.
     """
-    argparse.ArgumentParser(description=run_extra_datasets.__doc__).parse_args(argv)
-    tok, model = acts.get_model(EXTRA_MODEL, EXTRA_DEV, torch.float16)
+    ap = argparse.ArgumentParser(description=run_extra_datasets.__doc__)
+    ap.add_argument("--device", default=EXTRA_DEV)
+    args = ap.parse_args(argv)
+    tok, model = acts.get_model(EXTRA_MODEL, args.device, torch.float16)
     out = {}
     for ds in EXTRA_DATASETS:
         st, y = data.load_dataset(ds, cap=1199, seed=0)
-        A = acts.extract_all_layers(st, tok, model, EXTRA_DEV, 16)
+        A = acts.extract_all_layers(st, tok, model, args.device, 16)
         out[ds] = {}
         for L in LAYERS:
             o = est.observables(A[L].astype(np.float64), y, True); o.pop("theta")
@@ -293,18 +300,18 @@ def run_extra_datasets(argv=None):
 
 
 # =============================================================================
-# olmo  (was scripts/geometry_olmo.py)
+# olmo
 # =============================================================================
 OLMO_ART = REPO / "artifacts"
 
 
-OLMO_MODEL = os.environ.get("OLMO_MODEL", "allenai/OLMo-2-0425-1B")
+OLMO_MODEL = "allenai/OLMo-2-0425-1B"     # default for --model
 
 
 OLMO_DATASETS = ["counterfact_true_false", "cities"]
 
 
-OLMO_OUT = Path(os.environ.get("OUT", OLMO_ART / "geometry_olmo.json"))
+OLMO_OUT = OLMO_ART / "geometry_olmo.json"   # default for --out
 
 
 DEVICE = "mps"
@@ -318,15 +325,19 @@ def run_olmo(argv=None):
     the same loaders and the same estimator as the Pythia results, so the numbers are
     directly comparable. Activations only -- no steering, no GPU.
     """
-    argparse.ArgumentParser(description=run_olmo.__doc__).parse_args(argv)
-    tok, model = get_model(OLMO_MODEL, DEVICE, torch.float32)
-    res = {"model": OLMO_MODEL, "datasets": {}}
+    ap = argparse.ArgumentParser(description=run_olmo.__doc__)
+    ap.add_argument("--model", default=OLMO_MODEL)
+    ap.add_argument("--out", default=str(OLMO_OUT))
+    args = ap.parse_args(argv)
+    out_path = Path(args.out)
+    tok, model = get_model(args.model, DEVICE, torch.float32)
+    res = {"model": args.model, "datasets": {}}
     for ds in OLMO_DATASETS:
         stmts, y = load_dataset(ds, cap=cap_for(ds))   # same cap as the pythia runs
         y = np.asarray(y)
         A = extract_all_layers(stmts, tok, model, DEVICE, batch_size=16)
         nL = A.shape[0]
-        print(f"\n=== {OLMO_MODEL} / {ds}  ({len(y)} rows, {nL} layers) ===")
+        print(f"\n=== {args.model} / {ds}  ({len(y)} rows, {nL} layers) ===")
         print(f"{'L':>4} {'PR':>8} {'l1/tr':>8} {'l1/l2':>9} {'cos_v1':>8} {'d_mm':>7} {'d_maha':>8}")
         rows = []
         for L in range(nL):
@@ -339,13 +350,13 @@ def run_olmo(argv=None):
                   f"{o['lambda1_over_lambda2']:>9.1f} {o['cos_theta_v1']:>8.3f} "
                   f"{o['d_mass_mean']:>7.2f} {o['d_mahalanobis']:>8.2f}")
         res["datasets"][ds] = rows
-    OLMO_OUT.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(res, open(OLMO_OUT, "w"), indent=1)
-    print(f"\nwrote {OLMO_OUT}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    json.dump(res, open(out_path, "w"), indent=1)
+    print(f"\nwrote {out_path}")
 
 
 # =============================================================================
-# outliers  (was scripts/outlier_check.py)
+# outliers
 # =============================================================================
 OUTLIER_OUT = os.path.join(REPO, "artifacts", "outlier_check.json")
 
@@ -397,11 +408,8 @@ def run_outliers(argv=None):
             key = f"{model}__{ds}"
             print(f"\n{'='*74}\n=== {key} ===", flush=True)
 
-            try:
-                stmts, y_re = statements_for(ds, args.cap, args.seed)
-                match = len(y_re) == len(y) and bool((y_re == y).all())
-            except Exception as e:
-                stmts, match = None, f"loader failed: {e}"
+            stmts, y_re = statements_for(ds, args.cap, args.seed)   # a loader failure raises
+            match = len(y_re) == len(y) and bool((y_re == y).all())
             print(f"statement list regenerated, labels match cache: {match}", flush=True)
 
             per_layer = {}
@@ -450,7 +458,7 @@ def run_outliers(argv=None):
 
 
 # =============================================================================
-# steer-arms  (was scripts/check_rogue_dimension.py)
+# steer-arms
 # =============================================================================
 ROGUE_ART, ROGUE_DEV = os.path.join(REPO, "artifacts"), "mps"
 
@@ -492,14 +500,22 @@ def run_steer_arms(argv=None):
     ap.add_argument("--cap", type=int, default=1199)
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--out", default=os.path.join(ROGUE_ART, "rogue_dimension.json"))
+    ap.add_argument("--layers", default="", help="comma list, a subset of the six swept layers (default: all)")
+    ap.add_argument("--arms", default="theta,v1,theta_perp,random", help="comma list of arms to steer (default: all four)")
     args = ap.parse_args(argv)
+    names = [a for a in args.arms.split(",") if a]
+    if set(names) - {"theta", "v1", "theta_perp", "random"}:
+        raise SystemExit(f"unknown arm(s) {sorted(set(names) - {'theta', 'v1', 'theta_perp', 'random'})}")
     alphas = [float(a) for a in args.alphas.split(",")]
     seeds = [int(s) for s in args.seeds.split(",")]
+    want = {int(x) for x in args.layers.split(",") if x.strip()}
 
     tok, model = acts.get_model(args.model, ROGUE_DEV, torch.float16)
     dtype = next(model.parameters()).dtype
     nL = model.config.num_hidden_layers
-    layers = sorted({max(1, int(round(f * nL))) for f in steering.SEED_PLAN})
+    layers = steering.planned_layers(nL)
+    if want - set(layers):
+        raise SystemExit(f"--layers {sorted(want - set(layers))} not among {layers}")
     results = {}
 
     for ds in [d for d in args.datasets.split(",") if d]:
@@ -508,7 +524,7 @@ def run_steer_arms(argv=None):
         results[ds] = {}
         print(f"\n{'='*78}\n{args.model} / {ds}\n{'='*78}", flush=True)
 
-        for L in layers:
+        for L in [L for L in layers if not want or L in want]:
             X = Xs[L].astype(np.float64)
             sp, _, _ = rogue_spectrum(X, y)
             print(f"\n--- layer {L} ---", flush=True)
@@ -517,8 +533,7 @@ def run_steer_arms(argv=None):
                   f"|cos(theta,v1)|={sp['cos_theta_v1']:.3f}  "
                   f"||delta||/sqrt(tr)={sp['delta_over_sqrt_trace']:.4f}", flush=True)
 
-            per_arm = {k: {str(a): [] for a in alphas} for k in
-                       ("theta", "v1", "theta_perp", "random")}
+            per_arm = {k: {str(a): [] for a in alphas} for k in names}
             aurocs = {k: [] for k in per_arm}
 
             for sd in seeds:
@@ -534,6 +549,8 @@ def run_steer_arms(argv=None):
                     # were not comparable.
                     sc = est.class_gap(X, y)
                     for name, (u, Xa) in arms.items():
+                        if name not in per_arm:
+                            continue
                         for a in alphas:
                             A, _ = steering.antisym(model, tok, st, u, a, sc,
                                               pairs, base, args.bs, dtype)
@@ -542,7 +559,7 @@ def run_steer_arms(argv=None):
 
             a_top = str(alphas[-1])
             print(f"  {'arm':<12} {'AUROC':>7} {'A(a=%s)'%a_top:>18}", flush=True)
-            for name in ("theta", "v1", "theta_perp", "random"):
+            for name in names:
                 v = np.array(per_arm[name][a_top])
                 se = v.std(ddof=1) / np.sqrt(len(v)) if len(v) > 1 else 0.0
                 print(f"  {name:<12} {np.mean(aurocs[name]):>7.3f} "
@@ -559,7 +576,7 @@ def run_steer_arms(argv=None):
 
 
 # =============================================================================
-# gradient  (was scripts/score_gradient.py)
+# gradient
 # =============================================================================
 GRAD_ART = os.path.join(REPO, "artifacts")
 
@@ -624,20 +641,7 @@ def run_gradient(argv=None):
         scale = est.class_gap(X[tr], y[tr])
         block = model.gpt_neox.layers[L]
 
-        gs = []
-        for i in range(0, len(pairs), args.bs):
-            chunk = pairs[i:i + args.bs]
-            per_side = {}
-            for which in ("true", "false"):
-                texts = [p["prompt"] + p[which] for p in chunk]
-                n_prompts = [len(tok(p["prompt"]).input_ids) for p in chunk]
-                n_fulls = [len(tok(p["prompt"] + p[which]).input_ids) for p in chunk]
-                per_side[which] = steering.grad_for_texts(model, tok, block, texts,
-                                                 n_prompts, n_fulls)
-            gs.append(per_side["true"] - per_side["false"])
-            if (i // args.bs) % 10 == 0:
-                print(f"  L{L}  {i + len(chunk)}/{len(pairs)}", flush=True)
-        G = np.vstack(gs)                      # (n_pairs, d)
+        G = steering.pair_gradients(model, tok, block, pairs, args.bs, log=f"L{L}")   # (n_pairs, d)
         g = G.mean(0)
         gn = float(np.linalg.norm(g))
 
@@ -685,7 +689,7 @@ def run_gradient(argv=None):
 
 
 # =============================================================================
-# gradient-ci  (was scripts/regen_gradient_ci.py)
+# gradient-ci
 # =============================================================================
 GRADCI_ART = REPO / "artifacts"
 
@@ -718,10 +722,12 @@ def run_gradient_ci(argv=None):
     triples [point, lo, hi] in artifacts/score_gradient_{name}.json in place,
     leaving every other field untouched.
     """
-    argparse.ArgumentParser(description=run_gradient_ci.__doc__).parse_args(argv)
+    ap = argparse.ArgumentParser(description=run_gradient_ci.__doc__)
+    ap.add_argument("--suffix", default="", help="read and rewrite score_gradient_{name}{suffix}.json (e.g. _v2)")
+    args = ap.parse_args(argv)
     for name in NAMES:
-        z = np.load(GRADCI_ART / f"score_gradient_{name}_vectors.npz")
-        path = GRADCI_ART / f"score_gradient_{name}.json"
+        z = np.load(GRADCI_ART / f"score_gradient_{name}{args.suffix}_vectors.npz")
+        path = GRADCI_ART / f"score_gradient_{name}{args.suffix}.json"
         doc = json.load(open(path))
         layers = sorted(doc["layers"], key=int)
         for L in layers:
@@ -730,6 +736,7 @@ def run_gradient_ci(argv=None):
             for jk, vk in KEYS.items():
                 w = z[f"L{L}_{vk}"].astype(np.float64)
                 old = doc["layers"][L][jk]
+                old = old if isinstance(old, list) else [old, float("nan"), float("nan")]   # a fresh run stores the point only
                 new = cos_bootstrap_interval(G, w, rng, B)
                 doc["layers"][L][jk] = new
                 if jk == "cos_g_v1" or jk == "cos_g_theta_whitened":
@@ -755,13 +762,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ logs_*.txt
 *.ckpt
 data/
 models/
-/notebooks/tabular_control/make_blog_figures.py
 scripts/local/
 next-post.md
 
@@ -32,3 +31,23 @@ artifacts/steer_ckpt_sigma_units/
 artifacts/snr_grid.csv
 artifacts/grid_*.png
 artifacts/truth_snr_*.png
+!artifacts/dropper_projection.npz
+scripts/followup/
+
+# steering post (part 2): its code is public, its artifacts stay in the private repo until
+# the post is out; also the private layer-index audit and follow-up records
+artifacts/steer_g_arm_*
+artifacts/refusal_*
+artifacts/score_gradient_*_seed*
+artifacts/noise_floor_*
+artifacts/controls_analysis.json*
+artifacts/e2_perp_*
+artifacts/depth_arms_analysis.json*
+artifacts/overnight_analysis.json*
+artifacts/layernorm_geometry.json*
+artifacts/window_vs_push.json*
+artifacts/response_spectrum*
+artifacts/dropper_count_*
+artifacts/rogue_dimension_L28_seeds3-9.json*
+artifacts/layer_fix_diff.json*
+artifacts/layer_index_audit.json*

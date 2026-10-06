@@ -4,11 +4,11 @@ Figures for 'Regime of recoverability'.
 Emergence across the Pythia ladder, the plausibility-vs-truth depth profile, and the
 cross-dataset transfer matrix, all read from artifacts/snr_sweep.json (https://jasteinberg.github.io/blog/2026/truth-directions-snr/).
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    emergence              fig_emergence.py
-    plausibility-depth     fig_plausibility_depth.py
-    transfer               fig_transfer.py
+    emergence              Figure
+    plausibility-depth     Figure
+    transfer               Figure
     all                    every figure above
 
 Run from the repo root:  python scripts/figures/recoverability.py <subcommand> [-h]
@@ -31,7 +31,7 @@ matplotlib.use("Agg")
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-
+from utils import provenance  # noqa: E402
 
 # ---- shared by several subcommands ------------------------------------------
 SWEEP = Path(os.environ.get("SNR_SWEEP", REPO / "artifacts" / "snr_sweep.json"))
@@ -39,7 +39,7 @@ S = json.load(open(SWEEP))
 
 
 # =============================================================================
-# emergence  (was scripts/fig_emergence.py)
+# emergence
 # =============================================================================
 EMERGE_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_emergence.png"
 
@@ -165,7 +165,7 @@ def run_emergence(argv=None):
 
 
 # =============================================================================
-# plausibility-depth  (was scripts/fig_plausibility_depth.py)
+# plausibility-depth
 # =============================================================================
 PLAUS_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_plausibility_depth.png"
 
@@ -295,7 +295,7 @@ def run_plausibility_depth(argv=None):
 
 
 # =============================================================================
-# transfer  (was scripts/fig_transfer.py)
+# transfer
 # =============================================================================
 TRANSFER_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_transfer.png"
 
@@ -415,13 +415,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

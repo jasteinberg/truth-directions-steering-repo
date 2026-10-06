@@ -7,11 +7,11 @@ Steering cells for the plain and whitened directions at every (model, dataset,
 layer, seed) in artifacts/steer_ckpt/, the random-direction steering nulls, and the
 per-layer susceptibility chi with its rank test against the null.
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    sweep                  steer_confirm2.py
-    extend-null            extend_null.py
-    chi                    chi_whitening_analysis.py
+    sweep                  Does causal steering efficacy anticorrelate with decodability ...
+    extend-null            The random-direction null for steering is currently estimated ...
+    chi                    Estimator-vs-function-class analysis for counterfact steering, ...
 
 Run from the repo root:  python scripts/causal_steering.py <subcommand> [-h]
 
@@ -30,6 +30,7 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from utils import provenance
 from utils.truthlib import acts, data, steering
 from utils.truthlib import estimators as est
 from utils.truthlib.steering import (
@@ -47,7 +48,7 @@ DEV = "mps"
 
 
 # =============================================================================
-# sweep  (was scripts/steer_confirm2.py)
+# sweep
 # =============================================================================
 ART = os.path.join(REPO, "artifacts")
 
@@ -108,10 +109,13 @@ def run_sweep(argv=None):
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--n_rand", type=int, default=30)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--layers", default="", help="comma list, a subset of the planned layers (default: all planned)")
+    ap.add_argument("--ckpt_dir", default=CKPT, help="where cells and nulls are written (default: the published steer_ckpt/)")
     args = ap.parse_args(argv)
     alphas = [float(x) for x in args.alphas.split(",")]
     explicit = [int(x) for x in args.seeds.split(",") if x.strip()] or None
-    os.makedirs(CKPT, exist_ok=True)
+    want = {int(x) for x in args.layers.split(",") if x.strip()}
+    os.makedirs(args.ckpt_dir, exist_ok=True)
 
     for mname in [m for m in args.models.split(",") if m]:
         tok, model = acts.get_model(mname, DEV, torch.float16)
@@ -123,13 +127,15 @@ def run_sweep(argv=None):
         for ds in [d for d in args.datasets.split(",") if d]:
             print(f"  [{ds}]", flush=True)
             layers = sorted(plan)
-            Xs, y = get_acts(model, tok, mname, ds, layers, args.cap)
+            if want - set(layers):
+                raise SystemExit(f"--layers {sorted(want - set(layers))} not in the plan {layers}")
+            Xs, y = get_acts(model, tok, mname, ds, layers, args.cap)   # all planned layers: the cache key
             pool = data.load_pairs(ds, args.pairs, 0)
 
-            for L in layers:
+            for L in [L for L in layers if not want or L in want]:
                 seeds = explicit if explicit is not None else list(range(plan[L]))
                 for sd in seeds:
-                    cp = cell_path(mname, ds, L, sd)
+                    cp = os.path.join(args.ckpt_dir, os.path.basename(cell_path(mname, ds, L, sd)))
                     if os.path.exists(cp) and not args.force:
                         continue
                     rec, _ = run_cell(model, tok, Xs[L], y, pool, L, alphas,
@@ -141,7 +147,7 @@ def run_sweep(argv=None):
                           f"plain A={a8['plain']['antisym']:+.3f} "
                           f"whit A={a8['whitened']['antisym']:+.3f}", flush=True)
 
-                np_ = null_path(mname, ds, L)
+                np_ = os.path.join(args.ckpt_dir, os.path.basename(null_path(mname, ds, L)))
                 if not os.path.exists(np_) or args.force:
                     nl = run_null(model, tok, Xs[L], y, pool, L, alphas,
                                   args.bs, dtype, args.pairs_per_seed, args.n_rand)
@@ -153,11 +159,11 @@ def run_sweep(argv=None):
             del Xs; gc.collect()
 
         del model, tok; gc.collect(); torch.mps.empty_cache()
-    print(f"\ndone. cells in {CKPT}")
+    print(f"\ndone. cells in {args.ckpt_dir}")
 
 
 # =============================================================================
-# extend-null  (was scripts/extend_null.py)
+# extend-null
 # =============================================================================
 def run_extend_null(argv=None):
     """The random-direction null for steering is currently estimated from 6 draws, so
@@ -185,6 +191,7 @@ def run_extend_null(argv=None):
     ap.add_argument("--cap", type=int, default=1199)
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--layers", default="", help="comma list; default all in SEED_PLAN")
+    ap.add_argument("--ckpt_dir", default=CKPT, help="where the nulls are read and written (default: the published steer_ckpt/)")
     args = ap.parse_args(argv)
     want = {int(s) for s in args.layers.split(",") if s}
     alphas = [float(a) for a in args.alphas.split(",")]
@@ -193,18 +200,20 @@ def run_extend_null(argv=None):
         tok, model = acts.get_model(mname, DEV, torch.float16)
         dtype = next(model.parameters()).dtype
         nL = model.config.num_hidden_layers
-        layers = sorted({max(1, int(round(f * nL))) for f in steering.SEED_PLAN})
-        if want:
-            layers = [L for L in layers if L in want]
+        planned = steering.planned_layers(nL)
+        if want - set(planned):
+            raise SystemExit(f"--layers {sorted(want - set(planned))} not in the plan {planned}")
+        layers = [L for L in planned if not want or L in want]
         print(f"\n=== {mname} ({nL} layers) -> {layers} ===", flush=True)
 
         for ds in [d for d in args.datasets.split(",") if d]:
-            Xs, y = steering.get_acts(model, tok, mname, ds, layers, args.cap)
+            # all planned layers: the cache key (a subset would re-extract and overwrite the cache)
+            Xs, y = steering.get_acts(model, tok, mname, ds, planned, args.cap)
             pool = data.load_pairs(ds, args.pairs, 0)
             pairs = steering.pairs_for_seed(pool, 0, args.pairs_per_seed)
 
             for L in layers:
-                p = steering.null_path(mname, ds, L)
+                p = os.path.join(args.ckpt_dir, os.path.basename(steering.null_path(mname, ds, L)))
                 cur = json.load(open(p)) if os.path.exists(p) else {"layer": L, "alphas": {}}
                 X = Xs[L].astype(np.float64)
                 # Scale in class-gap units, matching run_null in steer_confirm2
@@ -265,7 +274,7 @@ def run_extend_null(argv=None):
 
 
 # =============================================================================
-# chi  (was scripts/chi_whitening_analysis.py)
+# chi
 # =============================================================================
 ALPHAS = [0.5, 1.0, 2.0, 4.0]
 
@@ -330,13 +339,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

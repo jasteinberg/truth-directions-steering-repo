@@ -7,12 +7,12 @@ it is large (beta^2 against the Gaussian reference, v1 kurtosis); the held-out
 d' of the Fisher direction along the shrinkage path; and rho chosen by
 cross-validation on the train half.
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    intensity              extract_shrinkage.py
-    decomposition          shrinkage_decomposition.py
-    rho-sweep              shrinkage_sweep.py
-    rho-cv                 shrinkage_cv.py
+    intensity              Extract the Ledoit-Wolf shrinkage intensity rho actually used by ...
+    decomposition          Decompose the Ledoit-Wolf shrinkage intensity and test whether ...
+    rho-sweep              Does shrinkage explain why whitening falls short below layer 24?
+    rho-cv                 Choose the shrinkage intensity by cross-validation INSIDE the ...
 
 Run from the repo root:  python scripts/corrected_estimator.py <subcommand> [-h]
 
@@ -31,6 +31,8 @@ from sklearn.covariance import LedoitWolf
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from utils import provenance
+from utils.truthlib import steering
 from utils.truthlib.estimators import (
     d_prime,
     fisher,
@@ -46,7 +48,7 @@ GRID = [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1, 0.3, 0.6, 0.9]
 
 
 # =============================================================================
-# intensity  (was scripts/extract_shrinkage.py)
+# intensity
 # =============================================================================
 INTENSITY_OUT = os.path.join(REPO, "artifacts", "shrinkage_intensity.json")
 
@@ -55,7 +57,7 @@ def run_intensity(argv=None):
     """Extract the Ledoit-Wolf shrinkage intensity rho actually used by the whitened
     (Fisher) direction, per layer, from the cached activations.
 
-    snr_sweep.py fits LedoitWolf(assume_centered=True) on the TRAIN half of the
+    `recoverability.py sweep` fits LedoitWolf(assume_centered=True) on the TRAIN half of the
     within-class-centered activations and never records lw.shrinkage_, so the post's
     methods appendix names the estimator without being able to quote the number.
     This reproduces that fit exactly -- same class-stratified 50/50 split at seed 0,
@@ -103,7 +105,7 @@ def run_intensity(argv=None):
 
 
 # =============================================================================
-# decomposition  (was scripts/shrinkage_decomposition.py)
+# decomposition
 # =============================================================================
 DECOMP_OUT = os.path.join(REPO, "artifacts", "shrinkage_decomposition.json")
 
@@ -172,7 +174,7 @@ def run_decomposition(argv=None):
 
 
 # =============================================================================
-# rho-sweep  (was scripts/shrinkage_sweep.py)
+# rho-sweep
 # =============================================================================
 RHOSWEEP_OUT = os.path.join(REPO, "artifacts", "shrinkage_sweep.json")
 
@@ -200,7 +202,7 @@ def run_rho_sweep(argv=None):
     positive definite for any rho > 0.
 
     Everything is fit on the train half and scored on the full held-out half, matching the
-    "clean_train" regime of outlier_check.py so the numbers are directly comparable.
+    "clean_train" regime of `rogue_dimension.py outliers` so the numbers are directly comparable.
     """
     ap = argparse.ArgumentParser(description=run_rho_sweep.__doc__)
     ap.add_argument("--out", default=RHOSWEEP_OUT)
@@ -262,7 +264,7 @@ def run_rho_sweep(argv=None):
 
 
 # =============================================================================
-# rho-cv  (was scripts/shrinkage_cv.py)
+# rho-cv
 # =============================================================================
 RHOCV_OUT = os.path.join(REPO, "artifacts", "shrinkage_cv.json")
 
@@ -270,7 +272,7 @@ RHOCV_OUT = os.path.join(REPO, "artifacts", "shrinkage_cv.json")
 def run_rho_cv(argv=None):
     """Choose the shrinkage intensity by cross-validation INSIDE the training half.
 
-    scripts/shrinkage_sweep.py showed that Ledoit-Wolf's rho is far from optimal for the
+    `corrected_estimator.py rho-sweep` showed that Ledoit-Wolf's rho is far from optimal for the
     separation d'_F of the direction it produces -- but it found that by reading held-out d'
     off a grid, which is selection on the evaluation data and therefore not quotable. This
     does it properly:
@@ -298,21 +300,19 @@ def run_rho_cv(argv=None):
     args = ap.parse_args(argv)
 
     results = {}
-    for model in ("pythia-2.8b", "pythia-1.4b"):
+    for model, n_blocks in (("pythia-2.8b", 32), ("pythia-1.4b", 24)):
         for ds in ("counterfact_true_false", "cities"):
-            p = os.path.join(CACHE, f"{model}__{ds}.npz")
-            if not os.path.exists(p):
-                continue
-            z = np.load(p); y = z["y"]
+            # refuses a missing cache or one without the planned layers
+            Xs, y = steering.load_cached_acts(model, ds, n_blocks)
             tr, te = split_indices(y, seed=args.seed)
-            layers = sorted(int(k[1:]) for k in z.files if k.startswith("L"))
+            layers = sorted(Xs)
             key = f"{model}__{ds}"
             print(f"\n=== {key} ===", flush=True)
             print(f"{'L':>4} {'rho*':>8} {'rho_LW':>8} {'d_F(cv)':>8} {'d_F(LW)':>8} "
                   f"{'null':>7} {'ratio':>6}", flush=True)
             per = {}
             for L in layers:
-                r = cv_layer(z[f"L{L}"].astype(np.float64), y, tr, te,
+                r = cv_layer(Xs[L].astype(np.float64), y, tr, te,
                               args.folds, args.seed, GRID)
                 per[str(L)] = r
                 ratio = r["d_F_cv"] / r["d_F_LW"] if r["d_F_LW"] > 0 else float("inf")
@@ -337,13 +337,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

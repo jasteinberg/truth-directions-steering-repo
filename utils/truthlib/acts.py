@@ -1,8 +1,6 @@
 """
 Model loading and residual-stream activation extraction (torch).
 
-Moved verbatim from snr_sweep.py.
-
 Drafted with the assistance of Claude (Anthropic).
 """
 import numpy as np
@@ -20,27 +18,48 @@ def get_model(name, device, dtype):
     return tok, model
 
 
+def blocks(model):
+    """The transformer blocks in order: GPT-NeoX / Pythia, GPT-2, and Llama-style (OLMo, Qwen).
+    See docs/model_conventions.md."""
+    if hasattr(model, "gpt_neox"):
+        return model.gpt_neox.layers
+    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        return model.transformer.h
+    return model.model.layers
+
+
 @torch.no_grad()
 def extract_all_layers(statements, tok, model, device, batch_size=16):
     """Last-token residual activations for every layer in one pass per batch.
 
-    Returns float32 array of shape (n_layers+1, N, d). Padding is right-side,
-    so the final real token is found from the attention mask.
+    Returns float32 array of shape (n_blocks+1, N, d). Convention: layer l is the
+    residual stream entering block l (hidden_states[l]; l = 0 is the embedding), the
+    site Steerer(l) pushes at and the score gradient is taken at. Index n_blocks is
+    the output of the final block BEFORE the final LayerNorm: hidden_states[-1] is
+    normalised and is not a residual read. Padding is right-side, so the final real
+    token is found from the attention mask.
     """
-    chunks = []
-    for i in range(0, len(statements), batch_size):
-        enc = tok(statements[i:i + batch_size], return_tensors="pt",
-                  padding=True, truncation=True, max_length=128).to(device)
-        hs = model(**enc).hidden_states           # (n_layers+1) tensors (B,T,d)
-        last = enc["attention_mask"].sum(1) - 1   # index of final real token
-        b = torch.arange(last.shape[0], device=device)
-        batch = torch.stack([h[b, last] for h in hs])    # (L, B, d)
-        chunks.append(batch.float().cpu().numpy())
-        del hs, enc, batch
+    final = {}
+    hook = blocks(model)[-1].register_forward_hook(
+        lambda m, i, o: final.__setitem__("h", o[0] if isinstance(o, tuple) else o))
+    try:
+        chunks = []
+        for i in range(0, len(statements), batch_size):
+            enc = tok(statements[i:i + batch_size], return_tensors="pt",
+                      padding=True, truncation=True, max_length=128).to(device)
+            hs = model(**enc).hidden_states           # (n_blocks+1) tensors (B,T,d)
+            last = enc["attention_mask"].sum(1) - 1   # index of final real token
+            b = torch.arange(last.shape[0], device=device)
+            layers = list(hs[:-1]) + [final.pop("h")]  # pre-LN output of the last block
+            batch = torch.stack([h[b, last] for h in layers])    # (n_blocks+1, B, d)
+            chunks.append(batch.float().cpu().numpy())
+            del hs, enc, batch, layers
+    finally:
+        hook.remove()
     return np.concatenate(chunks, axis=1)
 
 
-# ---- unsteered verdict readout (moved from check_model_verdicts) -----------------
+# ---- unsteered verdict readout -----------------------------------------------------------
 def verdict_logits(model, tok, stmts, tid_true, tid_false, template, dev, bs=8):
     """Logit difference between two verdict tokens at the final real token of template(stmt)."""
     out = []

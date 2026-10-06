@@ -1,0 +1,22 @@
+{
+ "counterfact_true_false": {
+  "n": 3000,
+  "droppers": 31,
+  "early_period": 31,
+  "both": 31,
+  "early_only": 0,
+  "dropper_only": 0,
+  "neither": 2969,
+  "dropper_labels_true": 12
+ },
+ "cities": {
+  "n": 1198,
+  "droppers": 0,
+  "early_period": 0,
+  "both": 0,
+  "early_only": 0,
+  "dropper_only": 0,
+  "neither": 1198,
+  "dropper_labels_true": 0
+ }
+}

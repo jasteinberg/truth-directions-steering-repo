@@ -6,11 +6,11 @@ of an intervention" (https://jasteinberg.github.io/blog/2026/truth-directions-sn
 real activations, and the behavioral-score schematic. Each writes truth_<name>.png
 to $FIGURE_DIR (default figures/).
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    whitening-schematic    fig_whitening_schematic.py
-    null-distribution      fig_null_distribution.py
-    behavioral-score       fig_behavioral_score.py
+    whitening-schematic    Schematic
+    null-distribution      The decoding null drawn, not asserted
+    behavioral-score       Schematic
     all                    every figure above
 
 Run from the repo root:  python scripts/figures/framework.py <subcommand> [-h]
@@ -33,7 +33,7 @@ matplotlib.use("Agg")
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-
+from utils import provenance  # noqa: E402
 
 # ---- shared by several subcommands ------------------------------------------
 CACHE = f"{REPO}/artifacts/act_cache"
@@ -44,7 +44,7 @@ def grid(ax):
 
 
 # =============================================================================
-# whitening-schematic  (was scripts/fig_whitening_schematic.py)
+# whitening-schematic
 # =============================================================================
 WHITEN_OUT = str(Path(os.environ.get("FIGURE_DIR", REPO / "figures")))
 
@@ -94,8 +94,7 @@ def run_whitening_schematic(argv=None):
     """Schematic: the mass-mean and Fisher directions under isotropic and anisotropic
     noise (truth_whitening_schematic.png).
 
-    Split out of notebooks/truth_directions/make_cluster_figures.py; reads this repo's
-    act cache and writes to $FIGURE_DIR (default figures/), like the other figure scripts.
+    Reads the act cache; writes to $FIGURE_DIR (default figures/).
     """
     argparse.ArgumentParser(description=run_whitening_schematic.__doc__).parse_args(argv)
     os.makedirs(WHITEN_OUT, exist_ok=True)
@@ -103,7 +102,7 @@ def run_whitening_schematic(argv=None):
 
 
 # =============================================================================
-# null-distribution  (was scripts/fig_null_distribution.py)
+# null-distribution
 # =============================================================================
 NULLDIST_OUT = str(Path(os.environ.get("FIGURE_DIR", REPO / "figures")))
 
@@ -155,8 +154,7 @@ def run_null_distribution(argv=None):
     """The decoding null drawn, not asserted: d' of 400 random directions against the
     mass-mean direction, cities, pythia-2.8b layer 28 (truth_null_distribution.png).
 
-    Split out of notebooks/truth_directions/make_cluster_figures.py; reads this repo's
-    act cache and writes to $FIGURE_DIR (default figures/), like the other figure scripts.
+    Reads the act cache; writes to $FIGURE_DIR (default figures/).
     """
     argparse.ArgumentParser(description=run_null_distribution.__doc__).parse_args(argv)
     os.makedirs(NULLDIST_OUT, exist_ok=True)
@@ -164,7 +162,7 @@ def run_null_distribution(argv=None):
 
 
 # =============================================================================
-# behavioral-score  (was scripts/fig_behavioral_score.py)
+# behavioral-score
 # =============================================================================
 BEHAV_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_behavioral_score.png"
 
@@ -301,13 +299,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

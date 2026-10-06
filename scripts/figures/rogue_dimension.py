@@ -5,12 +5,13 @@ Cluster geometry on real activations, the depth arms (theta, v1, theta_perp), th
 superposition probe, and the lifetime of the rogue dimension against the massive
 coordinates (https://jasteinberg.github.io/blog/2026/truth-directions-snr/).
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    clusters               fig_clusters.py
-    depth-arms             fig_depth_arms.py
-    superposition          fig_superposition.py
-    rogue-lifetime         fig_rogue_lifetime.py
+    clusters               Within-class cluster geometry at pythia-2.8b layer 28, cities vs ...
+    depth-arms             Depth profiles of the two estimators against the decoding null
+    superposition          Figure
+    rogue-lifetime         Figure
+    olmo-replication       The rogue-dimension observables and decoding margin on OLMo-2-1B
     all                    every figure above
 
 Run from the repo root:  python scripts/figures/rogue_dimension.py <subcommand> [-h]
@@ -32,7 +33,7 @@ matplotlib.use("Agg")
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-
+from utils import provenance  # noqa: E402
 
 # ---- shared by several subcommands ------------------------------------------
 SWEEP = Path(os.environ.get("SNR_SWEEP", REPO / "artifacts" / "snr_sweep.json"))
@@ -40,7 +41,7 @@ S = json.load(open(SWEEP))
 
 
 # =============================================================================
-# clusters  (was scripts/fig_clusters.py)
+# clusters
 # =============================================================================
 CACHE = f"{REPO}/artifacts/act_cache"
 
@@ -125,8 +126,7 @@ def run_clusters(argv=None):
     """Within-class cluster geometry at pythia-2.8b layer 28, cities vs counterfact: top principal
     axes, the mass-mean projection, and the eigenvalue spectrum (truth_clusters.png).
 
-    Split out of notebooks/truth_directions/make_cluster_figures.py; reads this repo's
-    act cache and writes to $FIGURE_DIR (default figures/), like the other figure scripts.
+    Reads the act cache; writes to $FIGURE_DIR (default figures/).
     """
     argparse.ArgumentParser(description=run_clusters.__doc__).parse_args(argv)
     os.makedirs(CLUSTERS_OUT, exist_ok=True)
@@ -134,7 +134,7 @@ def run_clusters(argv=None):
 
 
 # =============================================================================
-# depth-arms  (was scripts/fig_depth_arms.py)
+# depth-arms
 # =============================================================================
 ARMS_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_depth_arms.png"
 
@@ -154,11 +154,23 @@ ROGUE = Path(os.environ.get("ROGUE_JSON", REPO / "artifacts" / "rogue_dimension.
 R = json.load(open(ROGUE))
 
 
+# theta_perp seeds 3-9 (rogue_dimension.py steer-arms --arms theta_perp); merged with the three seeds
+# in ROGUE so the stars are the ten-seed mean. The file is required.
+PERP_EXTRA = REPO / "artifacts" / "rogue_theta_perp_seeds3-9.json"
+
+
 def perp(dataset):
     node = R[dataset]
+    extra = json.load(open(PERP_EXTRA))[dataset]
     Ls = sorted(node, key=int)
-    return (np.array([float(L) for L in Ls]),
-            np.array([node[L]["auroc"]["theta_perp"] for L in Ls]))
+    out = []
+    for L in Ls:
+        n0, a0 = len(node[L]["arms"]["theta_perp"]["1.0"]), node[L]["auroc"]["theta_perp"]
+        if L in extra:
+            n1, a1 = len(extra[L]["arms"]["theta_perp"]["1.0"]), extra[L]["auroc"]["theta_perp"]
+            a0 = (n0 * a0 + n1 * a1) / (n0 + n1)
+        out.append(a0)
+    return np.array([float(L) for L in Ls]), np.array(out)
 
 
 def arms(dataset):
@@ -253,7 +265,7 @@ def run_depth_arms(argv=None):
 
 
 # =============================================================================
-# superposition  (was scripts/fig_superposition.py)
+# superposition
 # =============================================================================
 SUPER_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_superposition.png"
 
@@ -344,7 +356,7 @@ def run_superposition(argv=None):
 
 
 # =============================================================================
-# rogue-lifetime  (was scripts/fig_rogue_lifetime.py)
+# rogue-lifetime
 # =============================================================================
 GEOM = REPO / "artifacts" / "geometry_all_layers.json"
 
@@ -463,10 +475,93 @@ def run_rogue_lifetime(argv=None):
                 print(f"    L{L:>2}  cos {y[j]:.3f}")
 
 
+
+# =============================================================================
+# olmo-replication
+# =============================================================================
+OLMO_GEOM = REPO / "artifacts" / "geometry_olmo.json"
+
+
+OLMO_DEC = REPO / "artifacts" / "olmo_goNogo.json"
+
+
+OLMO_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_olmo_replication.png"
+
+
+def run_olmo_replication(argv=None):
+    """Figure: the rogue-dimension observables and the decoding margin on OLMo-2-1B.
+
+    Three panels sharing the depth axis, one measured quantity each:
+      top     |cos(theta_hat, v1)|, the alignment of the estimator with the leading axis
+      middle  PR of the within-class covariance (linear: it spans 1.1 to 5.6 here)
+      bottom  held-out decoding margin AUROC - p95 of the per-layer random-direction
+              null, plain (solid) and whitened (dashed)
+
+    Layer L is the input to block L; the last layer is the last block's pre-norm
+    output. Layer 0 (the embedding) is degenerate and not drawn.
+
+    Reads artifacts/geometry_olmo.json and artifacts/olmo_goNogo.json only --
+    NO model, NO GPU.
+    """
+    argparse.ArgumentParser(description=run_olmo_replication.__doc__).parse_args(argv)
+    rcParams.update({
+        "font.family": "serif",
+        "axes.grid": True,
+        "grid.linestyle": ":",
+        "grid.linewidth": 0.6,
+        "grid.alpha": 0.55,
+        "font.size": 11,
+        "axes.linewidth": 0.8,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "figure.dpi": 150,
+    })
+    geom = json.load(open(OLMO_GEOM))["datasets"]
+    dec = json.load(open(OLMO_DEC))["models"]["allenai/OLMo-2-0425-1B"]["datasets"]
+    sets = [("counterfact_true_false", C_CF, "counterfact"), ("cities", C_CIT, "cities")]
+
+    fig, axes = plt.subplots(3, 1, figsize=(7.0, 8.4), sharex=True)
+    for ds, c, name in sets:
+        rows = [r for r in geom[ds] if np.isfinite(r["PR"])]
+        x = np.array([r["layer"] for r in rows])
+        axes[0].plot(x, [r["cos_theta_v1"] for r in rows], lw=2.0, color=c, label=name, zorder=3)
+        axes[1].plot(x, [r["PR"] for r in rows], lw=2.0, color=c, zorder=3)
+        lay = [r for r in dec[ds]["layers"] if r["layer"] >= 1]
+        xl = np.array([r["layer"] for r in lay])
+        p95 = np.array([r["null"]["auroc_p95"] for r in lay])
+        for arm, ls in [("plain", "-"), ("whitened", "--")]:
+            m = np.array([r[arm]["auroc"] for r in lay]) - p95
+            axes[2].plot(xl, m, lw=2.0, color=c, ls=ls, zorder=3)
+    axes[2].axhline(0, color="#566573", lw=0.9, zorder=2)
+    axes[2].text(1.0, 0.012, "null 95th percentile", fontsize=9, color="#566573", va="bottom")
+
+    axes[0].set_ylabel(r"$|\cos(\hat\theta,\, \hat v_1)|$")
+    axes[0].set_ylim(-0.03, 1.05)
+    axes[0].legend(frameon=False, fontsize=9.5, loc="lower left")
+    axes[1].set_ylabel("participation ratio")
+    axes[1].set_ylim(0.9, 6.2)
+    axes[2].set_ylabel(r"AUROC $-\ p_{95}$")
+    axes[2].set_xlabel("layer")
+    from matplotlib.lines import Line2D
+    axes[2].legend(handles=[Line2D([], [], color="#566573", lw=2.0, ls="-", label="plain"),
+                            Line2D([], [], color="#566573", lw=2.0, ls="--", label="whitened")],
+                   frameon=False, fontsize=9.5, loc="upper left")
+
+    fig.tight_layout()
+    OLMO_OUT.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(OLMO_OUT, bbox_inches="tight")
+    print(f"wrote {OLMO_OUT}\n")
+    for ds, _, name in sets:
+        lay = {r["layer"]: r for r in dec[ds]["layers"]}
+        best = max((L for L in lay if L >= 1), key=lambda L: lay[L]["plain"]["auroc"] - lay[L]["null"]["auroc_p95"])
+        r = lay[best]
+        print(f"  {name:<12} best L{best}: plain {r['plain']['auroc']:.3f} whitened {r['whitened']['auroc']:.3f} p95 {r['null']['auroc_p95']:.3f}")
+
+
 def run_all(argv=None):
     """Draw every figure in this group, each from matplotlib's default style."""
     argparse.ArgumentParser(description=run_all.__doc__).parse_args(argv)
-    for run in (run_clusters, run_depth_arms, run_superposition, run_rogue_lifetime,):
+    for run in (run_clusters, run_depth_arms, run_superposition, run_rogue_lifetime, run_olmo_replication,):
         matplotlib.rcdefaults()
         run([])
 
@@ -476,17 +571,13 @@ COMMANDS = {
     "depth-arms": run_depth_arms,
     "superposition": run_superposition,
     "rogue-lifetime": run_rogue_lifetime,
+    "olmo-replication": run_olmo_replication,
     "all": run_all,
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

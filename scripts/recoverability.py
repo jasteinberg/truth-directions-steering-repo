@@ -8,11 +8,11 @@ cross-dataset transfer, the superposition probe and the Cover N-sweep at that
 layer (snr_sweep.json). Also the distractor transfer to `likely` and the
 unsteered verdict readout.
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    sweep                  snr_sweep.py
-    transfer-likely        transfer_to_likely.py
-    verdicts               check_model_verdicts.py
+    sweep                  Truth-direction SNR sweep across the Pythia ladder
+    transfer-likely        Closes the distractor test the post currently flags as not run
+    verdicts               Can pythia-2.8b judge these statements true or false on its own, ...
 
 Run from the repo root:  python scripts/recoverability.py <subcommand> [-h]
 
@@ -33,6 +33,7 @@ from sklearn.metrics import roc_auc_score
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from utils import provenance
 from utils.env import ENV
 from utils.truthlib import acts, data
 from utils.truthlib import estimators as est
@@ -43,7 +44,7 @@ from utils.truthlib.nulls import N_NULL, cover_n_sweep
 from utils.truthlib.sweep import PCA_KS, analyze_dataset, best_layer, fit_oriented, superposition_probe
 
 # =============================================================================
-# sweep  (was scripts/snr_sweep.py)
+# sweep
 # =============================================================================
 DATA = Path(ENV.GOT)
 
@@ -77,7 +78,7 @@ def run_model(mname, datasets, device, dtype, args):
 
     per_dataset, acts_at_best = {}, {}
     for dset in datasets:
-        cp = ckpt_path(mname, dset)
+        cp = Path(args.ckpt_dir) / ckpt_path(mname, dset).name
         cap = args.cap_override or cap_for(dset)
         stmts, y = load_dataset(dset, cap=cap, seed=args.seed)
         if args.smoke:
@@ -168,6 +169,7 @@ def run_sweep(argv=None):
     ap.add_argument("--datasets", default=",".join(MAIN_TIER + SMALL_TIER + DISTRACTOR))
     ap.add_argument("--device", default="mps")
     ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--ckpt_dir", default=str(CKPT), help="per-(model, dataset) checkpoints (default: the published artifacts/ckpt/)")
     ap.add_argument("--layer_stride", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--cap_override", type=int, default=None)
@@ -179,17 +181,13 @@ def run_sweep(argv=None):
     args = ap.parse_args(argv)
 
     SWEEP_ART.mkdir(parents=True, exist_ok=True)
-    CKPT.mkdir(parents=True, exist_ok=True)
+    Path(args.ckpt_dir).mkdir(parents=True, exist_ok=True)
     dtype = torch.float16 if args.device == "mps" else torch.float32
     datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]
 
     results = {}
     for mname in [m.strip() for m in args.models.split(",") if m.strip()]:
-        try:
-            results[mname] = run_model(mname, datasets, args.device, dtype, args)
-        except Exception as e:
-            print(f"  !! {mname} failed: {type(e).__name__}: {e}", flush=True)
-            results[mname] = {"error": f"{type(e).__name__}: {e}"}
+        results[mname] = run_model(mname, datasets, args.device, dtype, args)
         # write after every model so a later crash cannot lose earlier rungs
         Path(args.out).write_text(json.dumps(
             {"config": {"main_tier": MAIN_TIER, "small_tier": SMALL_TIER,
@@ -204,7 +202,7 @@ def run_sweep(argv=None):
 
 
 # =============================================================================
-# transfer-likely  (was scripts/transfer_to_likely.py)
+# transfer-likely
 # =============================================================================
 LIKELY_ART = Path(__file__).resolve().parent.parent / "artifacts"
 
@@ -276,7 +274,7 @@ def run_transfer_likely(argv=None):
 
 
 # =============================================================================
-# verdicts  (was scripts/check_model_verdicts.py)
+# verdicts
 # =============================================================================
 D = ENV.GOT
 
@@ -355,13 +353,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

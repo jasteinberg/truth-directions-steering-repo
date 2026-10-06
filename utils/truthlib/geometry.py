@@ -9,11 +9,6 @@ Within-class geometry at one layer, and the rogue dimension.
                        the outlier appendix: the circular v1 selection, in-sample
                        geometry, and held-out d' under three cleaning regimes
 
-Moved verbatim from geometry_all_layers.py (layer_observables),
-massive_all_layers.py (layer_row), check_rogue_dimension.py (spectrum,
-build_arms) and outlier_check.py (v1_mask, geometry, held_out); only names
-and module prefixes changed.
-
 Drafted with the assistance of Claude (Anthropic).
 """
 import numpy as np

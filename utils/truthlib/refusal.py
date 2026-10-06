@@ -1,11 +1,7 @@
 """
 Refusal-direction machinery (torch): the chat-formatted AdvBench/Alpaca prompts,
 the refusal log-odds score, the per-prompt gradient pass, and the residual-stream
-hook for Qwen. Shared by refusal_gradient, refusal_steer_arm, refusal_generations
-and refusal_fd_check.
-
-Moved verbatim from refusal_gradient.py (constants through boot_cos) and
-refusal_steer_arm.py (QwenSteerer, score); only module prefixes changed.
+hook for Qwen (used by scripts/refusal_corner.py).
 
 Drafted with the assistance of Claude (Anthropic).
 """
@@ -16,9 +12,14 @@ import numpy as np
 import torch
 
 from ..env import ENV
+from .steering import Steerer
 
 DEV = "mps"
 MODEL = "Qwen/Qwen1.5-1.8B-Chat"
+# English refusal openers only. Steered along g_hat at alpha = 2 the model refuses
+# coherently in Chinese (refusal_generations, draft OPEN g), which this set scores as
+# compliance, so P(refusal) under-reads that regime. Do not change the set without
+# Julia: every refusal artifact was scored with it (tests/test_steering.py pins it).
 REFUSAL_TOKS = ["I", "I'm", "As", "Sorry", "I cannot", "I can", "Unfortunately"]
 LOSS_SCALE = 1024.0
 
@@ -58,16 +59,22 @@ def logodds_from_logits(logits_last, rids):
 
 
 def batch_forward(model, tok, block, texts, rids, want_grad):
-    """Returns (ell, last-token acts at block, per-prompt grads or None)."""
+    """Returns (ell, last-token acts entering `block`, per-prompt grads or None).
+
+    For block = model.model.layers[l] this reads and differentiates at layer l, the
+    residual stream entering block l (hidden_states[l]): the site QwenSteerer(l) pushes at.
+    """
     store = {}
 
-    def hook(mod, inp, out):
-        h = out[0] if isinstance(out, tuple) else out
+    def hook(mod, args, kwargs):
+        h = args[0] if args else kwargs["hidden_states"]
         h2 = h.detach().requires_grad_(True) if want_grad else h
         store["h"] = h2
-        return ((h2,) + tuple(out[1:])) if isinstance(out, tuple) else h2
+        if args:
+            return (h2,) + tuple(args[1:]), kwargs
+        return args, {**kwargs, "hidden_states": h2}
 
-    handle = block.register_forward_hook(hook)
+    handle = block.register_forward_pre_hook(hook, with_kwargs=True)
     try:
         ctx = torch.enable_grad() if want_grad else torch.no_grad()
         with ctx:
@@ -95,31 +102,10 @@ def boot_cos(G, u, B, seed):
     return [float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))]
 
 
-# ---- steering (from refusal_steer_arm.py) ---------------------------------------
-class QwenSteerer:
-    """Adds vec to the residual output of model.model.layers[layer], all positions."""
-
-    def __init__(self, model, layer):
-        self.block = model.model.layers[layer]
-        self.vec = None
-        self.h = None
-
-    def __enter__(self):
-        def hook(mod, inp, out):
-            if self.vec is None:
-                return out
-            if isinstance(out, tuple):
-                return (out[0] + self.vec.to(out[0].dtype),) + tuple(out[1:])
-            return out + self.vec.to(out.dtype)
-        self.h = self.block.register_forward_hook(hook)
-        return self
-
-    def __exit__(self, *a):
-        if self.h:
-            self.h.remove()
-
-    def set(self, w, alpha, device, dtype):
-        self.vec = None if (w is None or alpha == 0) else alpha * torch.tensor(w, device=device, dtype=dtype)
+# ---- steering ----------------------------------------------------------------------------
+# Qwen uses the same steering hook as Pythia: a forward pre-hook adding the push to the
+# residual stream entering block l (steering.Steerer finds Qwen's blocks via acts.blocks).
+QwenSteerer = Steerer
 
 
 @torch.no_grad()

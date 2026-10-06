@@ -8,13 +8,13 @@ collapses with the participation ratio. Per-dataset curves and fits, the Gaussia
 check of the d'-PR relation, the pool-size control, and the planted in-sample vs
 held-out attenuation control.
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    by-dataset             cover_by_dataset.py
-    by-dataset-refit       cover_by_dataset --refit
-    gaussian-check         cover_gaussian_check.py
-    pool-control           cover_pool_control.py
-    insample-attenuation   check_insample_attenuation.py
+    by-dataset             Does the shuffled-label amplitude depend on the dataset?
+    by-dataset-refit       Recompute the fits and collapse from the stored curves
+    gaussian-check         Why does sp_en_trans miss the sqrt(PR/N) collapse?
+    pool-control           Is the sp_en_trans anomaly a property of the dataset, or of ...
+    insample-attenuation   In-sample versus held-out d' on a synthetic control with a ...
 
 Run from the repo root:  python scripts/dimensional_slack.py <subcommand> [-h]
 
@@ -35,6 +35,7 @@ from scipy.stats import norm
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from utils import provenance
 from utils.truthlib import acts, data
 from utils.truthlib import estimators as est
 from utils.truthlib.nulls import (
@@ -49,16 +50,16 @@ from utils.truthlib.nulls import (
 )
 
 # ---- shared by several subcommands ------------------------------------------
-MODEL = os.environ.get("COVER_MODEL", "EleutherAI/pythia-2.8b")
+MODEL = "EleutherAI/pythia-2.8b"          # default for --model
 DATASETS = ["counterfact_true_false", "cities", "larger_than", "sp_en_trans"]
 CAP = 3000          # applies only to counterfact (N=31,964); the rest are smaller
-DEV = os.environ.get("COVER_DEV", "mps")
+DEV = "mps"                               # default for --device
 SWEEP = json.load(open(REPO / "artifacts" / "snr_sweep.json"))
 NS = [100, 200, 354]
 
 
 # =============================================================================
-# by-dataset  (was scripts/cover_by_dataset.py)
+# by-dataset
 # =============================================================================
 N_MIN = 100
 
@@ -102,49 +103,54 @@ def run_by_dataset(argv=None):
     sample PR drifts with the number of samples it was estimated from, C inherits
     that drift and the small datasets are penalised for being small.
     """
-    argparse.ArgumentParser(description=run_by_dataset.__doc__).parse_args(argv)
-    tok, model = acts.get_model(MODEL, DEV, torch.float16 if DEV == "mps" else torch.float32)
-    out = {"config": {"model": MODEL, "datasets": DATASETS,
+    ap = argparse.ArgumentParser(description=run_by_dataset.__doc__)
+    ap.add_argument("--sweep", default=str(REPO / "artifacts" / "snr_sweep.json"), help="readout sweep whose best layers are used")
+    ap.add_argument("--datasets", default=",".join(DATASETS))
+    ap.add_argument("--out", default=str(BYDS_OUT))
+    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--device", default=DEV)
+    args = ap.parse_args(argv)
+    sweep = json.load(open(args.sweep))
+    datasets = args.datasets.split(",")
+    out_path = Path(args.out)
+    tok, model = acts.get_model(args.model, args.device, torch.float16 if args.device == "mps" else torch.float32)
+    out = {"config": {"model": args.model, "datasets": datasets, "sweep": os.path.basename(args.sweep),
                       "n_min": N_MIN, "n_pts": N_PTS, "cap": CAP,
                       "n_rep": BYDS_N_REP,
                       "note": "in-sample shuffled-label excess; per-dataset "
                               "geometric N grid to the full set"},
            "results": {}}
-    for ds in DATASETS:
-        try:
-            best = SWEEP["models"][MODEL]["datasets"][ds]["best_layer"]
-            stmts, y = data.load_dataset(ds, cap=CAP, seed=0)
-            print(f"[{ds}] N={len(y)} best_layer={best}", flush=True)
-            A = acts.extract_all_layers(stmts, tok, model, DEV, 16)
-            X = A[best].astype(np.float64)
-            d_model = X.shape[1]
-            ns = geometric_grid(len(y), N_MIN, N_PTS)
-            print(f"   grid {ns}", flush=True)
-            rows = excess_curve(X, y, d_model, ns, BYDS_N_REP, seed=0)
-            fit = powerlaw_fit(rows)
-            out["results"][ds] = {"best_layer": int(best), "N_total": int(len(y)),
-                                  "ns": ns,
-                                  "spectrum": cover_spectrum(X, y), "curve": rows,
-                                  "fit": fit,
-                                  "collapse": collapse(rows, cover_spectrum(X, y)["participation_ratio"])}
-            print(f"   fit a={fit['amplitude']:.4f} b={fit['exponent']:+.3f} "
-                  f"R2={fit['r2']:.3f}  PR={out['results'][ds]['spectrum']['participation_ratio']:.1f}",
+    for ds in datasets:
+        best = sweep["models"][args.model]["datasets"][ds]["best_layer"]
+        stmts, y = data.load_dataset(ds, cap=CAP, seed=0)
+        print(f"[{ds}] N={len(y)} best_layer={best}", flush=True)
+        A = acts.extract_all_layers(stmts, tok, model, args.device, 16)
+        X = A[best].astype(np.float64)
+        d_model = X.shape[1]
+        ns = geometric_grid(len(y), N_MIN, N_PTS)
+        print(f"   grid {ns}", flush=True)
+        rows = excess_curve(X, y, d_model, ns, BYDS_N_REP, seed=0)
+        fit = powerlaw_fit(rows)
+        out["results"][ds] = {"best_layer": int(best), "N_total": int(len(y)),
+                              "ns": ns,
+                              "spectrum": cover_spectrum(X, y), "curve": rows,
+                              "fit": fit,
+                              "collapse": collapse(rows, cover_spectrum(X, y)["participation_ratio"])}
+        print(f"   fit a={fit['amplitude']:.4f} b={fit['exponent']:+.3f} "
+              f"R2={fit['r2']:.3f}  PR={out['results'][ds]['spectrum']['participation_ratio']:.1f}",
+              flush=True)
+        if "exponent_wls" in fit:
+            print(f"   wls a={fit['amplitude_wls']:.4f} b={fit['exponent_wls']:+.3f}",
                   flush=True)
-            if "exponent_wls" in fit:
-                print(f"   wls a={fit['amplitude_wls']:.4f} b={fit['exponent_wls']:+.3f}",
-                      flush=True)
-            for r in rows:
-                print(f"     N={r['N']:>5} N/2d={r['N_over_2d']:.3f} "
-                      f"excess={r['excess_mean']:.4f}±{r['excess_sd']:.4f} "
-                      f"true={r['true_auroc_mean']:.3f} PR@N={r['pr_at_N']:.1f}",
-                      flush=True)
-            del A, X
-            gc.collect()
-        except Exception as e:
-            print(f"  !! {ds} failed: {type(e).__name__}: {e}", flush=True)
-            out["results"][ds] = {"error": f"{type(e).__name__}: {e}"}
-        BYDS_OUT.write_text(json.dumps(out, indent=2))
-        print(f"  -> wrote {BYDS_OUT}", flush=True)
+        for r in rows:
+            print(f"     N={r['N']:>5} N/2d={r['N_over_2d']:.3f} "
+                  f"excess={r['excess_mean']:.4f}±{r['excess_sd']:.4f} "
+                  f"true={r['true_auroc_mean']:.3f} PR@N={r['pr_at_N']:.1f}",
+                  flush=True)
+        del A, X
+        gc.collect()
+        out_path.write_text(json.dumps(out, indent=2))
+        print(f"  -> wrote {out_path}", flush=True)
 
 
 def refit():
@@ -172,7 +178,7 @@ def run_by_dataset_refit(argv=None):
 
 
 # =============================================================================
-# gaussian-check  (was scripts/cover_gaussian_check.py)
+# gaussian-check
 # =============================================================================
 GAUSS_N_REP = 32
 
@@ -216,15 +222,23 @@ def run_gaussian_check(argv=None):
     per dataset, plus the excess kurtosis of the within-class projection, so the
     sp_en_trans anomaly can be localised to one step.
     """
-    argparse.ArgumentParser(description=run_gaussian_check.__doc__).parse_args(argv)
-    tok, model = acts.get_model(MODEL, DEV, torch.float16 if DEV == "mps" else torch.float32)
-    out = {"config": {"model": MODEL, "ns": NS, "n_rep": GAUSS_N_REP,
-                      "C_predicted": 1.0 / math.sqrt(math.pi)},
+    ap = argparse.ArgumentParser(description=run_gaussian_check.__doc__)
+    ap.add_argument("--sweep", default=str(REPO / "artifacts" / "snr_sweep.json"), help="readout sweep whose best layers are used")
+    ap.add_argument("--datasets", default=",".join(DATASETS))
+    ap.add_argument("--out", default=str(GAUSS_OUT))
+    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--device", default=DEV)
+    args = ap.parse_args(argv)
+    sweep = json.load(open(args.sweep))
+    out_path = Path(args.out)
+    tok, model = acts.get_model(args.model, args.device, torch.float16 if args.device == "mps" else torch.float32)
+    out = {"config": {"model": args.model, "ns": NS, "n_rep": GAUSS_N_REP,
+                      "C_predicted": 1.0 / math.sqrt(math.pi), "sweep": os.path.basename(args.sweep)},
            "results": {}}
-    for ds in DATASETS:
-        best = SWEEP["models"][MODEL]["datasets"][ds]["best_layer"]
+    for ds in args.datasets.split(","):
+        best = sweep["models"][args.model]["datasets"][ds]["best_layer"]
         stmts, y = data.load_dataset(ds, cap=CAP, seed=0)
-        A = acts.extract_all_layers(stmts, tok, model, DEV, 16)
+        A = acts.extract_all_layers(stmts, tok, model, args.device, 16)
         X = A[best].astype(np.float64)
         PR, lam = pr_of(X, y)
         print(f"[{ds}] N_total={len(y)} L={best} PR={PR:.1f}", flush=True)
@@ -269,12 +283,12 @@ def run_gaussian_check(argv=None):
         }
         del A, X
         gc.collect()
-        GAUSS_OUT.write_text(json.dumps(out, indent=2))
-    print(f"-> wrote {GAUSS_OUT}")
+        out_path.write_text(json.dumps(out, indent=2))
+    print(f"-> wrote {out_path}")
 
 
 # =============================================================================
-# pool-control  (was scripts/cover_pool_control.py)
+# pool-control
 # =============================================================================
 POOLS = [354, 800, 1980, 3000]
 
@@ -292,7 +306,7 @@ def run_pool_control(argv=None):
     """Is the sp_en_trans anomaly a property of the dataset, or of measuring PR from
     only 354 samples?
 
-    cover_gaussian_check.py localised the miss to step (A): sp_en_trans's in-sample
+    `dimensional_slack.py gaussian-check` localised the miss to step (A): sp_en_trans's in-sample
     d' runs ~50% above 2 sqrt(PR/N) where the other three sit within 3-17%. Step
     (B), AUROC = Phi(d'/sqrt2), holds to 2% everywhere, so the projection shape is
     not the culprit.
@@ -316,14 +330,17 @@ def run_pool_control(argv=None):
         den = theta' Sigma theta / ((4/N) tr Sigma^2)
         A   = d'_meas / (2 sqrt(PR/N)) = num / sqrt(den)
     """
-    argparse.ArgumentParser(description=run_pool_control.__doc__).parse_args(argv)
-    tok, model = acts.get_model(MODEL, DEV, torch.float16 if DEV == "mps" else torch.float32)
-    out = {"config": {"model": MODEL, "pools": POOLS, "ns": NS,
+    ap = argparse.ArgumentParser(description=run_pool_control.__doc__)
+    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--device", default=DEV)
+    args = ap.parse_args(argv)
+    tok, model = acts.get_model(args.model, args.device, torch.float16 if args.device == "mps" else torch.float32)
+    out = {"config": {"model": args.model, "pools": POOLS, "ns": NS,
                       "n_rep": POOL_N_REP, "n_pool_rep": N_POOL_REP}, "results": {}}
     for ds in DATASETS:
-        best = SWEEP["models"][MODEL]["datasets"][ds]["best_layer"]
+        best = SWEEP["models"][args.model]["datasets"][ds]["best_layer"]
         stmts, y = data.load_dataset(ds, cap=CAP, seed=0)
-        A_all = acts.extract_all_layers(stmts, tok, model, DEV, 16)
+        A_all = acts.extract_all_layers(stmts, tok, model, args.device, 16)
         X = A_all[best].astype(np.float64)
         print(f"[{ds}] N_total={len(y)} L={best}", flush=True)
         rows = []
@@ -389,7 +406,7 @@ def run_pool_control(argv=None):
 
 
 # =============================================================================
-# insample-attenuation  (was scripts/check_insample_attenuation.py)
+# insample-attenuation
 # =============================================================================
 PLANTED_OUT = REPO / "artifacts" / "check_insample_attenuation.json"
 
@@ -441,13 +458,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

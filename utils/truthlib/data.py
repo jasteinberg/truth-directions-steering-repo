@@ -2,9 +2,6 @@
 Datasets: the Marks & Tegmark true/false sets and the contrastive completion pairs
 built from them for the behavioral score. pandas and NumPy only, no torch.
 
-Moved verbatim from snr_sweep.py (tiers, caps, load_dataset) and steer_completions.py
-(pair builders, load_pairs).
-
 Drafted with the assistance of Claude (Anthropic).
 """
 from pathlib import Path

@@ -33,9 +33,9 @@
   {
    "train_on": "cities_cities_conj",
    "eval_on": "likely",
-   "layer": 26,
-   "auroc_plain": 0.4886746233263609,
-   "auroc_whitened": 0.5637632688672387
+   "layer": 32,
+   "auroc_plain": 0.5207436158432233,
+   "auroc_whitened": 0.5379134461583204
   },
   {
    "train_on": "cities_cities_disj",
@@ -61,9 +61,9 @@
   {
    "train_on": "counterfact_true_false",
    "eval_on": "likely",
-   "layer": 32,
-   "auroc_plain": 0.48037493987763,
-   "auroc_whitened": 0.519289493406114
+   "layer": 31,
+   "auroc_plain": 0.405823201082762,
+   "auroc_whitened": 0.49598997774074116
   },
   {
    "train_on": "likely",

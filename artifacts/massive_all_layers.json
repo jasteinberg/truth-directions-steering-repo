@@ -413,8 +413,8 @@
    "32": {
     "n_massive_coords": 0,
     "n_droppers": 0,
-    "median_abs_activation": 0.8134765625,
-    "max_coord_ratio": 44.94597839135654,
+    "median_abs_activation": 0.5458984375,
+    "max_coord_ratio": 49.631484794275494,
     "massive_coords": []
    }
   }
@@ -833,8 +833,8 @@
    "32": {
     "n_massive_coords": 0,
     "n_droppers": 0,
-    "median_abs_activation": 0.86572265625,
-    "max_coord_ratio": 39.59842075578116,
+    "median_abs_activation": 0.53076171875,
+    "max_coord_ratio": 44.982520699172035,
     "massive_coords": []
    }
   }
@@ -1029,8 +1029,8 @@
    "24": {
     "n_massive_coords": 0,
     "n_droppers": 0,
-    "median_abs_activation": 0.95654296875,
-    "max_coord_ratio": 33.58448187850944,
+    "median_abs_activation": 1.427734375,
+    "max_coord_ratio": 55.00410396716826,
     "massive_coords": []
    }
   }
@@ -1225,8 +1225,8 @@
    "24": {
     "n_massive_coords": 0,
     "n_droppers": 0,
-    "median_abs_activation": 0.9638671875,
-    "max_coord_ratio": 32.58358662613982,
+    "median_abs_activation": 1.462890625,
+    "max_coord_ratio": 57.95460614152203,
     "massive_coords": []
    }
   }

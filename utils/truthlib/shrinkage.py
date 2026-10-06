@@ -3,11 +3,6 @@ Ledoit-Wolf shrinkage of the within-class covariance: its intensity and why it i
 large (beta^2 against the Gaussian reference), the shrinkage path from one
 eigendecomposition, and cross-validated rho.
 
-ledoit_wolf_parts, shrinkage_eig, shrunk_fisher, stratified_folds moved from
-estimators.py; shrinkage_row from extract_shrinkage.py (layer_row);
-shrunk_ratios and lw_decomposition from shrinkage_decomposition.py (spectrum,
-analyze); cv_layer from shrinkage_cv.py (run_layer, GRID now an argument).
-
 Drafted with the assistance of Claude (Anthropic).
 """
 import numpy as np

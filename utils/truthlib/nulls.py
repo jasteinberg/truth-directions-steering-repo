@@ -4,10 +4,7 @@ direction achieves (random_direction_null), and how much a mass-mean fit to
 shuffled labels achieves as N crosses Cover's capacity 2d (cover_n_sweep, and
 per dataset excess_curve, its power-law fit and the PR collapse constant).
 
-Moved verbatim from snr_sweep.py, cover_by_dataset.py, cover_gaussian_check.py,
-cover_pool_control.py and check_insample_attenuation.py. Script globals became
-arguments (n_rep, n_min, n_pts); spectrum -> cover_spectrum, grid_for ->
-geometric_grid, one_draw -> shuffled_draw, control -> planted_attenuation.
+Also the in-sample attenuation control on a planted direction (planted_attenuation).
 
 Drafted with the assistance of Claude (Anthropic).
 """
@@ -83,9 +80,9 @@ def cover_n_sweep(X, y, ns, d_model, seed=0):
     return rows
 
 
-# ---- per-dataset shuffled-label law (moved from cover_*) ------------------------
+# ---- per-dataset shuffled-label law ------------------------------------------------------
 def cover_spectrum(X, y):
-    """Within-class spectrum diagnostics (np.cov, class-sorted rows: the cover_* convention)."""
+    """Within-class spectrum diagnostics (np.cov, class-sorted rows: the dimensional-slack convention)."""
     lam = eigvals_desc(within_class_cov(X, y, ddof=1, class_sorted=True))
     tr = lam.sum()
     return {

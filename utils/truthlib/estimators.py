@@ -2,9 +2,9 @@
 Estimators for the truth-directions analysis.
 
 NumPy and scikit-learn only, no torch, so every figure and table can be rebuilt
-from the committed JSON on any machine. Each function reproduces, operation for
-operation, the arithmetic of the copies it replaces; where those copies
-disagreed, the choice is an explicit argument rather than a silent default.
+from the committed JSON on any machine. Where analyses use different conventions
+(ddof, row order of the centred data), the choice is an explicit argument, so each
+committed artifact reproduces bit for bit.
 
 Drafted with the assistance of Claude (Anthropic).
 """
@@ -38,12 +38,13 @@ def within_class_cov(X, y, ddof=0, class_sorted: bool = False):
     """Within-class covariance C-hat.
 
     ddof=0 divides by N, the post's definition and the Ledoit-Wolf convention.
-    ddof=1 is np.cov, used by geometry_observables, check_rogue_dimension and
-    the cover_* scripts; kept so those artifacts reproduce exactly. Ratios
+    ddof=1 is np.cov, the convention of the geometry observables, the rogue-dimension
+    spectrum and the dimensional-slack analyses; kept so those artifacts reproduce
+    exactly. Ratios
     (lambda1/tr, lambda1/lambda2, PR) and eigenvectors are identical under both.
 
     class_sorted=True stacks the centred class-0 rows above the class-1 rows
-    before summing, as the cover_* scripts do. Same matrix, different summation
+    before summing, as the dimensional-slack analyses do. Same matrix, different summation
     order, so it differs in the last bits; kept for exact reproduction.
     """
     if class_sorted:
@@ -166,7 +167,7 @@ def chi_origin(alphas, values):
     return float((a * v).sum() / (a * a).sum())
 
 
-# ---- evaluation and geometry (moved from snr_sweep / geometry_observables) -------
+# ---- evaluation and geometry -------------------------------------------------------------
 def accuracy_midpoint(z, y):
     """Threshold at the midpoint of the class means (the mass-mean rule)."""
     thr = 0.5 * (z[y == 1].mean() + z[y == 0].mean())
@@ -224,7 +225,7 @@ def observables(X, y, shrink=True):
     }
 
 
-# ---- gradient geometry (moved from score_gradient / regen_gradient_ci) ---------------
+# ---- gradient geometry -------------------------------------------------------------------
 def rogue_and_gap(X, y, tr):
     """v1 (leading eigenvector of the within-class covariance) and e2."""
     Xtr = X[tr]; ytr = y[tr]

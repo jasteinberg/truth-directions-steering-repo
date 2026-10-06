@@ -4,10 +4,10 @@ Figures for the steering sections.
 'A causal test of the mass-mean direction' (the sign flip of chi) and 'Steering
 without a rogue dimension' (the regime control), from artifacts/steer_ckpt/ (https://jasteinberg.github.io/blog/2026/truth-directions-snr/).
 
-Subcommands, with the script each replaces:
+Subcommands:
 
-    steering-signflip      fig_steering_signflip.py
-    regime-control         fig_regime_control.py
+    steering-signflip      Figure
+    regime-control         Figure
     all                    every figure above
 
 Run from the repo root:  python scripts/figures/causal_steering.py <subcommand> [-h]
@@ -15,6 +15,7 @@ Run from the repo root:  python scripts/figures/causal_steering.py <subcommand> 
 Drafted with the assistance of Claude (Anthropic).
 """
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -29,8 +30,10 @@ matplotlib.use("Agg")
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+from utils import provenance
 from utils.truthlib.estimators import chi_origin
-from utils.truthlib.steering import load_null_cell, load_seed_cells
+from utils.truthlib.steering import load_null_cell as _load_null_cell
+from utils.truthlib.steering import load_seed_cells as _load_seed_cells
 
 # ---- shared by several subcommands ------------------------------------------
 MODEL = "pythia-2.8b"
@@ -40,7 +43,7 @@ C_WHIT = "#2c6fbb"      # corrected: blue
 
 
 # =============================================================================
-# steering-signflip  (was scripts/fig_steering_signflip.py)
+# steering-signflip
 # =============================================================================
 SIGNFLIP_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_steering_signflip.png"
 
@@ -48,7 +51,7 @@ SIGNFLIP_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_ste
 DATASET = "counterfact_true_false"
 
 
-LAYERS = [20, 24, 28]
+LAYERS = [16, 20, 24, 28]
 
 
 PANEL_A_LAYER = 28
@@ -58,6 +61,57 @@ CHI_AGG = os.environ.get("CHI_AGG", "median").lower()   # "median" | "mean"
 
 
 C_NULL = "#7f8c8d"      # null band: grey
+
+
+C_PERP = "#d68910"      # rank-one corrected: orange, as in the depth-arms figure
+
+
+# Third arm, the rank-one corrected direction theta_perp, from the rogue-dimension sweep: seeds 0-2
+# in rogue_dimension.json, 3-9 in rogue_theta_perp_seeds3-9.json (steer-arms --arms theta_perp).
+# Same pairs, unit and alphas as the steer_ckpt cells. None if either file is missing.
+PERP_FILES = [REPO / "artifacts" / "rogue_dimension.json",
+              REPO / "artifacts" / "rogue_theta_perp_seeds3-9.json"]
+
+
+# The protocol the post states: ten seeds per cell; the steering null has 400 draws at
+# counterfact L20, L24, L28 and cities L28 and 100 at every other cell. A figure drawn from
+# anything else is refused rather than drawn.
+N_SEEDS = 10
+NULL_400 = {("counterfact_true_false", 20), ("counterfact_true_false", 24),
+            ("counterfact_true_false", 28), ("cities", 28)}
+
+
+def load_seed_cells(model, dataset, layer):
+    sd = _load_seed_cells(model, dataset, layer)
+    if len(sd) != N_SEEDS:
+        raise SystemExit(f"{model} {dataset} L{layer}: {len(sd)} seed cells, expected {N_SEEDS}")
+    return sd
+
+
+def load_null_cell(model, dataset, layer):
+    null = _load_null_cell(model, dataset, layer)
+    want = 400 if (dataset, layer) in NULL_400 else 100
+    if null is None:
+        raise SystemExit(f"{model} {dataset} L{layer}: no null cell")
+    got = {a: len(v["draws"]) for a, v in null["alphas"].items()}
+    if set(got.values()) != {want}:
+        raise SystemExit(f"{model} {dataset} L{layer}: null draws {got}, expected {want} at every alpha")
+    return null
+
+
+def load_perp(dataset=DATASET):
+    """{layer: [seed cells]} in the steer_ckpt cell shape, the arm named "theta_perp"."""
+    missing = [f.name for f in PERP_FILES if not f.exists()]
+    if missing:
+        raise SystemExit(f"missing theta_perp inputs: {missing}")
+    out = {}
+    for f in PERP_FILES:
+        for L, node in json.load(open(f))[dataset].items():
+            arm = node["arms"]["theta_perp"]
+            out.setdefault(int(L), []).extend(
+                {"alphas": {a: {"theta_perp": {"antisym": arm[a][i]}} for a in arm}}
+                for i in range(len(arm["1.0"])))
+    return out
 
 
 def arm_curve(seeds, arm):
@@ -70,7 +124,7 @@ def chi_across_seeds(seeds, arm):
     """Central chi across seeds, plus asymmetric error bars.
 
     CHI_AGG=median (default) reports the median with inter-quartile bars, matching
-    what the post quotes and what chi_whitening_analysis.py computes. CHI_AGG=mean
+    what the post quotes and what `causal_steering.py chi` computes. CHI_AGG=mean
     reports the mean with +/- s.e.m. The two differ materially on the plain arm,
     whose seed distribution is skewed: at L24 the median is -0.026 and the mean
     -0.018.
@@ -100,6 +154,7 @@ def run_steering_signflip(argv=None):
     the on-disk data schema and are left as-is.
     """
     argparse.ArgumentParser(description=run_steering_signflip.__doc__).parse_args(argv)
+    PERP = load_perp()
     rcParams.update({
         "font.family": "serif",
         "axes.grid": True,
@@ -127,9 +182,14 @@ def run_steering_signflip(argv=None):
     axA.fill_between(a, null_lo, null_hi, color=C_NULL, alpha=0.18,
                      label="random-direction null (5th–95th pct.)", zorder=1)
 
-    for arm, c, lab in [("plain", C_PLAIN, r"plain $\hat\theta\propto\hat\delta$"),
-                        ("whitened", C_WHIT, r"whitened $\hat\theta_F\propto\hat\Sigma^{-1}\hat\delta$")]:
-        m, e = arm_curve(seeds, arm)
+    arms_a = [("plain", C_PLAIN, r"plain $\hat\theta\propto\hat\delta$", seeds),
+              ("whitened", C_WHIT, r"whitened $\hat\theta_F\propto\hat\Sigma^{-1}\hat\delta$", seeds)]
+    if PERP is not None:
+        arms_a.append(("theta_perp", C_PERP,
+                       r"rank-one $\hat\theta_\perp\propto(I-\hat v_1\hat v_1^\top)\hat\delta$",
+                       PERP[PANEL_A_LAYER]))
+    for arm, c, lab, sd_a in arms_a:
+        m, e = arm_curve(sd_a, arm)
         axA.errorbar(a, m, yerr=e, color=c, marker="o", ms=4, lw=1.6, capsize=2,
                      label=lab, zorder=3)
 
@@ -141,22 +201,25 @@ def run_steering_signflip(argv=None):
 
     # ---------- Panel B: chi across depth ----------
     x = np.arange(len(LAYERS))
-    w = 0.34
-    for i, (arm, c, lab) in enumerate([("plain", C_PLAIN, "plain"),
-                                        ("whitened", C_WHIT, "whitened")]):
+    arms_b = [("plain", C_PLAIN, "plain"), ("whitened", C_WHIT, "whitened")]
+    if PERP is not None:
+        arms_b.append(("theta_perp", C_PERP, r"rank-one $\hat\theta_\perp$"))
+    w = 0.34 if len(arms_b) == 2 else 0.26
+    for i, (arm, c, lab) in enumerate(arms_b):
         cent, lo, hi = [], [], []
         for L in LAYERS:
-            sd = load_seed_cells(MODEL, DATASET, L)
+            sd = PERP[L] if arm == "theta_perp" else load_seed_cells(MODEL, DATASET, L)
             mu, (elo, ehi) = chi_across_seeds(sd, arm)
             cent.append(mu); lo.append(elo); hi.append(ehi)
-        axB.bar(x + (i - 0.5) * w, cent, w, yerr=[lo, hi], color=c, alpha=0.85,
+        axB.bar(x + (i - (len(arms_b) - 1) / 2) * w, cent, w, yerr=[lo, hi], color=c, alpha=0.85,
                 capsize=3, label=lab)
 
     axB.axhline(0, color="k", lw=0.7)
     axB.set_xticks(x)
     axB.set_xticklabels([f"L{L}" for L in LAYERS])
     axB.set_ylabel(r"steering susceptibility $\chi=\mathrm{d}A/\mathrm{d}h|_0$")
-    axB.set_title("rank-1 whitening flips the sign at depth"
+    axB.set_title(("both corrections flip the sign at depth" if PERP is not None
+                   else "rank-1 whitening flips the sign at depth")
                   + ("  (median, IQR)" if CHI_AGG == "median" else "  (mean, s.e.m.)"),
                   fontsize=11)
     axB.legend(fontsize=9, frameon=False)
@@ -182,7 +245,7 @@ def run_steering_signflip(argv=None):
 
 
 # =============================================================================
-# regime-control  (was scripts/fig_regime_control.py)
+# regime-control
 # =============================================================================
 REGIME_OUT = Path(os.environ.get("FIGURE_DIR", REPO / "figures")) / "truth_regime_control.png"
 
@@ -211,7 +274,7 @@ def run_regime_control(argv=None):
     direction is the one that steers. Reads existing artifacts/steer_ckpt/*.json only
     -- NO model, NO GPU.
 
-    chi is the median across seeds (see fig_steering_signflip.py); bars are IQR.
+    chi is the median across seeds (see `figures/causal_steering.py steering-signflip`); bars are IQR.
     """
     argparse.ArgumentParser(description=run_regime_control.__doc__).parse_args(argv)
     rcParams.update({
@@ -229,7 +292,7 @@ def run_regime_control(argv=None):
     fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.2), sharey=True)
 
     for ax, (dataset, title, layers) in zip(axes, PANELS):
-        have = [L for L in layers if load_seed_cells(MODEL, dataset, L)]
+        have = layers                     # every panel layer; a missing cell raises
         x = np.arange(len(have))
         w = 0.34
         for i, (arm, c, lab) in enumerate([("plain", C_PLAIN, "plain"),
@@ -283,13 +346,8 @@ COMMANDS = {
 }
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print(__doc__)
-        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
-    cmd = sys.argv[1]
-    sys.argv[0] = f"{Path(sys.argv[0]).name} {cmd}"      # argparse usage names the subcommand
-    COMMANDS[cmd](sys.argv[2:])
+def main() -> None:
+    provenance.main(COMMANDS, __doc__)
 
 
 if __name__ == "__main__":

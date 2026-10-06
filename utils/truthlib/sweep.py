@@ -4,9 +4,6 @@ orient it on train, score it on the held-out half against a random-direction
 null on the same points; pick the layer that most clears its null; probe
 whether the signal survives projecting out the top principal components.
 
-Moved verbatim from snr_sweep.py; the directions are called by their
-estimators names (mass_mean_direction = mass_mean, whitened_direction = fisher).
-
 Drafted with the assistance of Claude (Anthropic).
 """
 import numpy as np
@@ -52,11 +49,9 @@ def analyze_dataset(A, y, layer_stride=1, seed=0):
     for li in layers:
         X = A[li].astype(np.float64)
         plain, (te, _) = fit_eval_split(X, y, "plain", seed=seed)
-        try:
-            whit, _ = fit_eval_split(X, y, "whitened", seed=seed)
-        except Exception as e:                    # ill-conditioned Sigma
-            whit = {"auroc": None, "d_prime": None, "acc": None,
-                    "error": str(e)[:80]}
+        # a failed whitened fit raises: an {"error": ...} row would let a figure or table
+        # silently drop the layer (no published sweep ever recorded one)
+        whit, _ = fit_eval_split(X, y, "whitened", seed=seed)
         # null on the SAME held-out points, so the comparison is apples-to-apples
         null = random_direction_null(X[te], y[te], seed=seed + li)
         rows.append({"layer": int(li), "plain": plain,
@@ -105,18 +100,15 @@ def superposition_probe(X, y, ks=PCA_KS, seed=0):
     return out
 
 
-# ---- transfer (moved from transfer_to_likely) ------------------------------------
+# ---- transfer ----------------------------------------------------------------------------
 def fit_oriented(X, y, seed=0):
     """Mass-mean and Fisher directions fit on the train half, each oriented on train.
-    Fisher falls back to mass-mean if it fails. Returns (theta, theta_F, test indices)."""
+    A failed Fisher fit raises. Returns (theta, theta_F, test indices)."""
     tr, te = split_indices(y, seed=seed)
     th = mass_mean(X[tr], y[tr])
     if auroc(X[tr] @ th, y[tr]) < 0.5:
         th = -th
-    try:
-        thw = fisher(X[tr], y[tr])
-        if auroc(X[tr] @ thw, y[tr]) < 0.5:
-            thw = -thw
-    except Exception:
-        thw = th.copy()
+    thw = fisher(X[tr], y[tr])
+    if auroc(X[tr] @ thw, y[tr]) < 0.5:
+        thw = -thw
     return th, thw, te
