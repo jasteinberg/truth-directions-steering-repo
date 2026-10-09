@@ -21,6 +21,9 @@ Subcommands:
     steer-arms             Is the large steering effect on `counterfact` a truth direction, ...
     gradient               Measures g = <sum_t grad_{x_t} ell>, the mean gradient of the ...
     gradient-ci            Regenerate the bootstrap intervals on the score-gradient ...
+    dropper-periods        Are the droppers the statements with a period before the final one?
+    dropper-projection     Projections onto the leading within-class axis, layers 30-32 (figure)
+    theta-perp-table       theta_perp at six layers, ten seeds, beside plain and whitened
 
 Run from the repo root:  python scripts/rogue_dimension.py <subcommand> [-h]
 
@@ -749,6 +752,142 @@ def run_gradient_ci(argv=None):
         print(f"-> wrote {path}", flush=True)
 
 
+# =============================================================================
+# dropper-periods
+# =============================================================================
+DROPPER_MODEL, DROPPER_DEV, DROPPER_FLAG_LAYER = "EleutherAI/pythia-2.8b", "mps", 28
+
+
+def run_dropper_periods(argv=None):
+    """Are the droppers the statements with a period before the final one?
+
+    Sun et al. (2024) place massive activations on the first token and on the first strong
+    delimiter. The readout token here is the statement's final period. Prediction: a statement
+    whose subject already contains a period (an initial, "Jr.", "F.C.", "D.C.") has its first
+    delimiter earlier, so its final period does not receive the massive activation, and that
+    is what makes it a dropper. Compares the dropper mask (massive_mask at layer 28, never uses
+    the labels) with that text predicate on pythia-2.8b counterfact (cap 3000) and cities.
+    Writes artifacts/dropper_periods.json.
+    """
+    argparse.ArgumentParser(description=run_dropper_periods.__doc__).parse_args(argv)
+    tok, model = acts.get_model(DROPPER_MODEL, DROPPER_DEV, torch.float16)
+    out = {}
+    for ds, cap in (("counterfact_true_false", 3000), ("cities", 1199)):
+        stmts, y = data.load_dataset(ds, cap=cap, seed=0)
+        A = acts.extract_all_layers(stmts, tok, model, DROPPER_DEV, 16)
+        drop, _, _ = est.massive_mask(A[DROPPER_FLAG_LAYER].astype(np.float64))
+        early = np.array(["." in s.rstrip().rstrip(".") for s in stmts])
+        tp, fp = int((drop & early).sum()), int((~drop & early).sum())
+        fn, tn = int((drop & ~early).sum()), int((~drop & ~early).sum())
+        print(f"{ds}: n={len(stmts)} droppers={int(drop.sum())} early-period={int(early.sum())} | "
+              f"both={tp} early-only={fp} dropper-only={fn} neither={tn}", flush=True)
+        for s in [s for s, d, e in zip(stmts, drop, early) if e and not d][:8]:
+            print("   early period, not a dropper:", s)
+        for s in [s for s, d, e in zip(stmts, drop, early) if d and not e][:8]:
+            print("   dropper, no early period:", s)
+        out[ds] = {"n": len(stmts), "droppers": int(drop.sum()), "early_period": int(early.sum()),
+                   "both": tp, "early_only": fp, "dropper_only": fn, "neither": tn,
+                   "dropper_labels_true": int(np.asarray(y)[drop].sum())}
+        del A
+    (Path(REPO) / "artifacts" / "dropper_periods.json").write_text(json.dumps(out, indent=1))
+
+
+# =============================================================================
+# dropper-projection
+# =============================================================================
+def run_dropper_projection(argv=None):
+    """Projections of counterfact statements onto the leading within-class axis, for the figure.
+
+    Same model, dataset, cap (3000), seed and dropper mask as `dimensional_slack.py
+    kurtosis-droppers` (massive_mask at layer 28, label-free). At layers 30, 31 and 32 it
+    projects the class-centred activations onto that layer's leading within-class eigenvector
+    v1 and standardises by the bulk (non-dropper) median and standard deviation. Writes
+    artifacts/dropper_projection.npz with z_L30, z_L31, z_L32, the dropper mask and the labels.
+    """
+    argparse.ArgumentParser(description=run_dropper_projection.__doc__).parse_args(argv)
+    tok, model = acts.get_model(DROPPER_MODEL, DROPPER_DEV, torch.float16)
+    stmts, y = data.load_dataset("counterfact_true_false", cap=3000, seed=0)
+    y = np.asarray(y)
+    A = acts.extract_all_layers(stmts, tok, model, DROPPER_DEV, 16)
+    drop, _, _ = est.massive_mask(A[DROPPER_FLAG_LAYER].astype(np.float64))
+    out = {"drop": drop, "y": y}
+    for L in (30, 31, 32):
+        X = A[L].astype(np.float64)
+        Xc = est.within_class_center(X, y)
+        lam, V = est.eigh_desc(est.within_class_cov(X, y, ddof=1))
+        z = Xc @ V[:, 0]
+        z = (z - np.median(z[~drop])) / np.std(z[~drop])
+        z *= np.sign(np.median(z[drop])) if drop.any() else 1.0
+        out[f"z_L{L}"] = z
+        print(f"L{L}: droppers {int(drop.sum())}, median z {np.median(z[drop]):.1f}, "
+              f"share of lambda1 {(Xc @ V[:, 0])[drop].__pow__(2).sum() / ((Xc @ V[:, 0])**2).sum():.3f}", flush=True)
+    p = Path(REPO) / "artifacts" / "dropper_projection.npz"
+    np.savez(p, **out); print(f"wrote {p}")
+
+
+# =============================================================================
+# theta-perp-table
+# =============================================================================
+PERP_ALPHAS = [0.5, 1.0, 2.0, 4.0]
+
+
+def _perp_chi(v):
+    # estimators.chi_origin's slope, written as a @ v / (a @ a): the summation order differs
+    # from chi_origin's by one ulp (7e-18 on five entries), and this form is the one the
+    # published theta_perp_table.json was computed with
+    a = np.array(PERP_ALPHAS); v = np.array(v)
+    return float((a @ v) / (a @ a))
+
+
+def _perp_summary(per_seed, nd):
+    """per_seed: list of {alpha: A}; nd: null draws at alpha = 1."""
+    a1 = np.array([s["1.0"] for s in per_seed])
+    chis = [_perp_chi([s[str(a)] for a in PERP_ALPHAS]) for s in per_seed]
+    p_seed = [float(np.mean(nd <= x)) if x < 0 else float(np.mean(nd >= x)) for x in a1]
+    m = a1.mean()
+    p_cell = float(np.mean(nd <= m)) if m < 0 else float(np.mean(nd >= m))
+    sd = nd.std(ddof=1)
+    return dict(n=len(a1), chi_median=float(np.median(chis)), A1_median=float(np.median(a1)),
+                A1_median_sd=float(np.median(a1) / sd), pos=int((a1 > 0).sum()),
+                clear_right=int(sum(1 for x, q in zip(a1, p_seed) if x > 0 and q < 0.05)),
+                clear_wrong=int(sum(1 for x, q in zip(a1, p_seed) if x < 0 and q < 0.05)),
+                p_cell=p_cell, A1_seeds=[float(x) for x in a1])
+
+
+def run_theta_perp_table(argv=None):
+    """theta_perp (rank-one corrected) steering at all six layers, ten seeds, beside the plain
+    and whitened arms, on the corrected layer convention. Seeds 0-2 from rogue_dimension.json,
+    3-9 from rogue_theta_perp_seeds3-9.json; nulls from steer_ckpt (the post's draw counts).
+    Writes artifacts/theta_perp_table.json.
+    """
+    argparse.ArgumentParser(description=run_theta_perp_table.__doc__).parse_args(argv)
+    art = Path(REPO) / "artifacts"
+    A0 = json.load(open(art / "rogue_dimension.json"))
+    A1 = json.load(open(art / "rogue_theta_perp_seeds3-9.json"))
+    out = {}
+    for ds in ("counterfact_true_false", "cities"):
+        out[ds] = {}
+        for L in ("8", "12", "16", "20", "24", "28"):
+            tp = A0[ds][L]["arms"]["theta_perp"]; tq = A1[ds][L]["arms"]["theta_perp"]
+            tp_seeds = [{a: tp[a][i] for a in tp} for i in range(len(tp["1.0"]))] + \
+                       [{a: tq[a][i] for a in tq} for i in range(len(tq["1.0"]))]
+            nd = np.array(steering.load_null_cell("pythia-2.8b", ds, int(L))["alphas"]["1.0"]["draws"])
+            cells = steering.load_seed_cells("pythia-2.8b", ds, int(L))
+            row = {"n_null": len(nd), "theta_perp": _perp_summary(tp_seeds, nd)}
+            for arm in ("plain", "whitened"):
+                row[arm] = _perp_summary([{a: c["alphas"][a][arm]["antisym"] for a in c["alphas"]} for c in cells], nd)
+            out[ds][L] = row
+
+    json.dump(out, open(art / "theta_perp_table.json", "w"), indent=1)
+    for ds, rows in out.items():
+        print(f"\n== {ds}  (chi median | med A(1) [sd] | pos/10 | seeds clearing right/wrong | cell p)")
+        for L, r in rows.items():
+            for arm in ("plain", "whitened", "theta_perp"):
+                s = r[arm]
+                print(f" L{L:>2} {arm:10s} {s['chi_median']:+.4f} | {s['A1_median']:+.3f} [{s['A1_median_sd']:+.1f}] | "
+                      f"{s['pos']}/{s['n']} | {s['clear_right']}/{s['clear_wrong']} | p {s['p_cell']:.3f}  (null {r['n_null']})")
+
+
 COMMANDS = {
     "observables": run_observables,
     "all-layers": run_all_layers,
@@ -759,6 +898,9 @@ COMMANDS = {
     "steer-arms": run_steer_arms,
     "gradient": run_gradient,
     "gradient-ci": run_gradient_ci,
+    "dropper-periods": run_dropper_periods,
+    "dropper-projection": run_dropper_projection,
+    "theta-perp-table": run_theta_perp_table,
 }
 
 

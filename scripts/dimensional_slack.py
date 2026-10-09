@@ -15,6 +15,8 @@ Subcommands:
     gaussian-check         Why does sp_en_trans miss the sqrt(PR/N) collapse?
     pool-control           Is the sp_en_trans anomaly a property of the dataset, or of ...
     insample-attenuation   In-sample versus held-out d' on a synthetic control with a ...
+    no-droppers            The counterfact shuffled-label sweep without the dropper statements
+    kurtosis-droppers      Is counterfact's excess kurtosis at layer 31 the droppers?
 
 Run from the repo root:  python scripts/dimensional_slack.py <subcommand> [-h]
 
@@ -449,12 +451,131 @@ def run_insample_attenuation(argv=None):
     print(f"-> wrote {PLANTED_OUT}")
 
 
+# =============================================================================
+# no-droppers
+# =============================================================================
+DROPPER_FLAG_LAYER = 28     # the dropper mask: massive_mask at this layer (label-free)
+
+
+NODROP_OUT = REPO / "artifacts" / "cover_no_droppers.json"
+
+
+def run_no_droppers(argv=None):
+    """The per-dataset shuffled-label sweep for counterfact with the dropper statements excluded.
+
+    Same protocol as `dimensional_slack.py by-dataset` (cap, geometric N grid, repetitions,
+    seed, best layer from snr_sweep.json), on pythia-2.8b counterfact at its best layer, with
+    the statements that lack the massive activation (massive_mask at layer 28, label-free)
+    removed first. Feeds the appendix panel of the effective-dimension collapse.
+    Writes artifacts/cover_no_droppers.json.
+    """
+    argparse.ArgumentParser(description=run_no_droppers.__doc__).parse_args(argv)
+    ds = "counterfact_true_false"
+    sweep = json.load(open(REPO / "artifacts" / "snr_sweep.json"))
+    best = sweep["models"][MODEL]["datasets"][ds]["best_layer"]
+    tok, model = acts.get_model(MODEL, DEV, torch.float16 if DEV == "mps" else torch.float32)
+    stmts, y = data.load_dataset(ds, cap=CAP, seed=0)
+    y = np.asarray(y)
+    A = acts.extract_all_layers(stmts, tok, model, DEV, 16)
+    drop, _, _ = est.massive_mask(A[DROPPER_FLAG_LAYER].astype(np.float64))
+    X, yk = A[best].astype(np.float64)[~drop], y[~drop]
+    ns = geometric_grid(len(yk), N_MIN, N_PTS)
+    rows = excess_curve(X, yk, X.shape[1], ns, BYDS_N_REP, seed=0)
+    spec_ = cover_spectrum(X, yk)
+    fit = powerlaw_fit(rows)
+    col = collapse(rows, spec_["participation_ratio"])
+    print(f"L{best}: excluded {int(drop.sum())} of {len(y)}; PR={spec_['participation_ratio']:.1f} "
+          f"a={fit['amplitude']:.4f} b={fit['exponent']:+.3f}+-{fit['exponent_se']:.3f} "
+          f"C={min(c['C'] for c in col):.2f}-{max(c['C'] for c in col):.2f}", flush=True)
+    out = {"model": MODEL, "dataset": ds, "best_layer": int(best), "flag_layer": DROPPER_FLAG_LAYER,
+           "n_total": int(len(y)), "n_excluded": int(drop.sum()), "N_total": int(len(yk)), "ns": ns,
+           "spectrum": spec_, "curve": rows, "fit": fit, "collapse": col}
+    NODROP_OUT.write_text(json.dumps(out, indent=2))
+
+
+# =============================================================================
+# kurtosis-droppers
+# =============================================================================
+KURT_LAYERS = [30, 31, 32]
+
+
+KURT_OUT = REPO / "artifacts" / "kurtosis_droppers.json"
+
+
+def _gaussian_steps(X, y, label):
+    """gaussian-check's two steps and the excess kurtosis, on one activation set."""
+    PR, lam = pr_of(X, y)
+    rng = np.random.default_rng(0)
+    rows = []
+    for N in NS:
+        if N > len(y):
+            continue
+        dp, au, ku = [], [], []
+        for _ in range(GAUSS_N_REP):
+            r = shuffled_draw(X, y, rng, N)
+            if r:
+                dp.append(r[0]); au.append(r[1]); ku.append(r[2])
+        dp_m, au_m, ku_m = map(lambda v: float(np.mean(v)), (dp, au, ku))
+        au_from = float(norm.cdf(dp_m / math.sqrt(2)))
+        rows.append({"N": N, "step_A": dp_m / (2 * math.sqrt(PR / N)),
+                     "step_B": (au_m - 0.5) / (au_from - 0.5), "kurtosis": ku_m,
+                     "C": (au_m - 0.5) * math.sqrt(N / PR)})
+    print(f"  {label:12s} n={len(y):5d} PR={PR:6.1f} lam1/tr={lam[0]/lam.sum():.3f} | " + "  ".join(
+        f"N={r['N']}: A={r['step_A']:.2f} B={r['step_B']:.2f} k={r['kurtosis']:+.1f} C={r['C']:.2f}" for r in rows), flush=True)
+    return {"n": int(len(y)), "PR": float(PR), "lambda1_over_trace": float(lam[0] / lam.sum()), "curve": rows}
+
+
+def run_kurtosis_droppers(argv=None):
+    """Is the excess kurtosis of counterfact's shuffled-label projections at layer 31 the droppers?
+
+    Hypothesis: the statements that lack the massive activation (flagged at layer 28 by the
+    coordinate rule, truthlib.estimators.massive_mask, which never touches v1, the class means
+    or the labels) still sit off the bulk at layer 31, after the massive coordinates themselves
+    have gone. A fraction p of outliers gives excess kurtosis up to 1/p - 6, about 100 at
+    p ~ 0.01.
+
+    Reruns the Gaussian check (same N grid, repetitions, seed and cap) on pythia-2.8b
+    counterfact at layers 30, 31 and 32 (32 = the last block's pre-norm output), on all
+    statements and with the droppers excluded, plus where the droppers sit relative to the
+    bulk. Writes artifacts/kurtosis_droppers.json.
+    """
+    argparse.ArgumentParser(description=run_kurtosis_droppers.__doc__).parse_args(argv)
+    tok, model = acts.get_model(MODEL, DEV, torch.float16 if DEV == "mps" else torch.float32)
+    stmts, y = data.load_dataset("counterfact_true_false", cap=CAP, seed=0)
+    y = np.asarray(y)
+    A = acts.extract_all_layers(stmts, tok, model, DEV, 16)
+    drop, _, massive = est.massive_mask(A[DROPPER_FLAG_LAYER].astype(np.float64))
+    print(f"N={len(y)}  droppers flagged at L{DROPPER_FLAG_LAYER}: {int(drop.sum())} (p = {drop.mean():.4f}, "
+          f"1/p - 6 = {1/drop.mean() - 6:.0f}); massive coords there: {int(massive.sum())}", flush=True)
+    out = {"model": MODEL, "dataset": "counterfact_true_false", "n_total": int(len(y)),
+           "flag_layer": DROPPER_FLAG_LAYER, "n_droppers": int(drop.sum()), "layers": {}}
+    for L in KURT_LAYERS:
+        X = A[L].astype(np.float64)
+        Xc = est.within_class_center(X, y)
+        lam, V = est.eigh_desc(est.within_class_cov(X, y, ddof=1))
+        z = Xc @ V[:, 0]
+        s = np.std(z[~drop])
+        zd = np.abs(z[drop] - np.median(z[~drop])) / s
+        print(f"\nL{L}: droppers along v1 of this layer: median |z| = {np.median(zd):.1f} bulk sd "
+              f"(bulk: {np.median(np.abs(z[~drop] - np.median(z[~drop])) / s):.2f}); "
+              f"share of lambda1 from droppers = {(z[drop]**2).sum() / (z**2).sum():.2f}", flush=True)
+        out["layers"][str(L)] = {
+            "dropper_median_abs_z_on_v1": float(np.median(zd)),
+            "dropper_share_of_lambda1": float((z[drop] ** 2).sum() / (z ** 2).sum()),
+            "all": _gaussian_steps(X, y, "all"),
+            "no_droppers": _gaussian_steps(X[~drop], y[~drop], "no droppers"),
+        }
+    KURT_OUT.write_text(json.dumps(out, indent=1)); print(f"\nwrote {KURT_OUT}")
+
+
 COMMANDS = {
     "by-dataset": run_by_dataset,
     "by-dataset-refit": run_by_dataset_refit,
     "gaussian-check": run_gaussian_check,
     "pool-control": run_pool_control,
     "insample-attenuation": run_insample_attenuation,
+    "no-droppers": run_no_droppers,
+    "kurtosis-droppers": run_kurtosis_droppers,
 }
 
 

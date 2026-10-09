@@ -51,7 +51,7 @@ LAW_OUT = FIG_DIR / "truth_shuffled_law.png"
 COLLAPSE_OUT = FIG_DIR / "truth_pr_collapse.png"
 
 
-# counterfact with the dropper statements excluded (followup/cover_no_droppers.py); optional
+# counterfact with the dropper statements excluded (`dimensional_slack.py no-droppers`); required
 NO_DROP = REPO / "artifacts" / "cover_no_droppers.json"
 
 
